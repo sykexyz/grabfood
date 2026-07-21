@@ -38,8 +38,8 @@ app.use("/api", router);
 if (fs.existsSync(FRONTEND_DIST)) {
   logger.info({ FRONTEND_DIST }, "Serving frontend static files");
   app.use(express.static(FRONTEND_DIST));
-  // SPA fallback
-  app.get("*", (_req, res) => {
+  // SPA fallback — Express 5 requires a named wildcard, not bare *
+  app.get("/*splat", (_req, res) => {
     if (fs.existsSync(INDEX_HTML)) {
       res.sendFile(INDEX_HTML);
     } else {
