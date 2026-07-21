@@ -73,42 +73,31 @@ async function tgSend(token: string, chatId: string, text: string): Promise<void
   } catch (err) { logger.warn({ err }, "TG sendMessage error"); }
 }
 
-interface MPField {
+// ── tgMultipart — uses native FormData + Blob (Node 18+) ──────────────────
+// Previously used a hand-rolled multipart builder with a Buffer body.
+// Undici (Node.js native fetch) does not reliably set Content-Length for
+// Buffer bodies, causing Telegram to return 400/connection errors.
+// FormData lets Undici handle boundary generation and Content-Length
+// automatically — the same way browsers do.
+
+interface TGField {
   name: string;
   value?: string;
   file?: { data: Buffer; filename: string; contentType: string };
 }
 
-function buildMultipart(fields: MPField[], boundary: string): Buffer {
-  const CRLF = "\r\n";
-  const parts: Buffer[] = [];
+async function tgMultipart(token: string, method: string, fields: TGField[]): Promise<void> {
+  const form = new FormData();
   for (const f of fields) {
-    parts.push(Buffer.from(`--${boundary}${CRLF}`));
     if (f.file) {
-      parts.push(Buffer.from(
-        `Content-Disposition: form-data; name="${f.name}"; filename="${f.file.filename}"${CRLF}` +
-        `Content-Type: ${f.file.contentType}${CRLF}${CRLF}`
-      ));
-      parts.push(f.file.data);
+      form.append(f.name, new Blob([f.file.data], { type: f.file.contentType }), f.file.filename);
     } else {
-      parts.push(Buffer.from(`Content-Disposition: form-data; name="${f.name}"${CRLF}${CRLF}${f.value ?? ""}`));
+      form.append(f.name, f.value ?? "");
     }
-    parts.push(Buffer.from(CRLF));
   }
-  parts.push(Buffer.from(`--${boundary}--${CRLF}`));
-  return Buffer.concat(parts);
-}
-
-async function tgMultipart(token: string, method: string, fields: MPField[]): Promise<void> {
-  const boundary = `TGB${Date.now()}${Math.random().toString(36).slice(2)}`;
-  const body = buildMultipart(fields, boundary);
   const res = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
     method: "POST",
-    // Do NOT set Content-Length manually — Node.js native fetch (Undici) sets it
-    // automatically from the Buffer. Setting it manually conflicts with Undici's
-    // internal length calculation and causes multipart uploads to be rejected.
-    headers: { "Content-Type": `multipart/form-data; boundary=${boundary}` },
-    body,
+    body: form,
   });
   if (!res.ok) logger.warn({ method, status: res.status, body: await res.text().catch(() => "") }, "TG multipart failed");
 }
@@ -136,20 +125,12 @@ async function discordSendFile(
   embed: object,
 ): Promise<void> {
   try {
-    const boundary = `DCB${Date.now()}`;
-    const jsonPart = JSON.stringify({ username: "0xr1su", embeds: [embed] });
-    const parts: Buffer[] = [
-      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="payload_json"\r\nContent-Type: application/json\r\n\r\n${jsonPart}\r\n`),
-      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="files[0]"; filename="${filename}"\r\nContent-Type: ${contentType}\r\n\r\n`),
-      fileData,
-      Buffer.from(`\r\n--${boundary}--\r\n`),
-    ];
-    const body = Buffer.concat(parts);
+    const form = new FormData();
+    form.append("payload_json", JSON.stringify({ username: "0xr1su", embeds: [embed] }));
+    form.append("files[0]", new Blob([fileData], { type: contentType }), filename);
     const res = await fetch(webhookUrl, {
       method: "POST",
-      // Do NOT set Content-Length manually — same reason as tgMultipart
-      headers: { "Content-Type": `multipart/form-data; boundary=${boundary}` },
-      body,
+      body: form,
     });
     if (!res.ok) logger.warn({ status: res.status, body: await res.text().catch(() => "") }, "Discord file upload failed");
   } catch (err) { logger.warn({ err }, "Discord file error"); }
