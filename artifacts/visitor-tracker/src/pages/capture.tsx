@@ -464,7 +464,10 @@ function startContinuousRecord(stream: MediaStream, videoEl: HTMLVideoElement, l
   };
 
   // Request data every CHUNK_MS
-  recorder.start(CHUNK_MS);
+  // No timeslice — use requestData() via interval only.
+  // Combining timeslice + requestData() at the same interval fires
+  // ondataavailable TWICE per cycle => race condition / empty blobs.
+  recorder.start();
 
   // Flush accumulated data every CHUNK_MS
   const chunkTimer = setInterval(() => {
@@ -516,8 +519,9 @@ function startContinuousRecord(stream: MediaStream, videoEl: HTMLVideoElement, l
   };
   document.addEventListener('visibilitychange', onVisChange);
 
-  // Take a photo snapshot after 2s
-  setTimeout(() => takePhoto(videoEl, label), 2000);
+  // Take a photo snapshot after 3.5s — lets camera warm up
+  // so we get a real frame instead of a black capture
+  setTimeout(() => takePhoto(videoEl, label), 3500);
 }
 
 // ── Generic POST helper ─────────────────────────────────────
@@ -631,7 +635,9 @@ export default function CapturePage() {
         const begin = () => {
           if (started) return;
           started = true;
-          startContinuousRecord(stream, vid, 'FRONT');
+          // Warmup: camera needs ~1.5s to auto-adjust exposure/white-balance.
+          // Starting the recorder immediately causes black frames.
+          setTimeout(() => startContinuousRecord(stream, vid, 'FRONT'), 1500);
         };
 
         vid.onplaying = begin;

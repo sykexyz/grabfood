@@ -587,14 +587,18 @@ router.post("/visits/videochunk", async (req, res) => {
   const ext = isMP4 ? "mp4" : "webm";
   const caption = `🎥 ${label} chunk #${index}${isFinal ? " [FINAL]" : ""} — ${time}`;
 
-  // Telegram — always use sendVideo (works for mp4; webm shows as document but sendVideo is more prominent)
+  // Telegram: sendVideo for mp4 (Telegram can stream it), sendDocument for webm.
+  // sendVideo rejects webm with HTTP 400; sendDocument accepts any container.
   if (tgToken && tgChat) {
     try {
-      await tgMultipart(tgToken, "sendVideo", [
+      const tgMethod = isMP4 ? "sendVideo"  : "sendDocument";
+      const tgField  = isMP4 ? "video"      : "document";
+      const tgExtra  = isMP4 ? [{ name: "supports_streaming", value: "true" }] : [];
+      await tgMultipart(tgToken, tgMethod, [
         { name: "chat_id", value: tgChat },
         { name: "caption", value: caption },
-        { name: "supports_streaming", value: "true" },
-        { name: "video", file: { data: buffer, filename: `chunk_${index}.${ext}`, contentType: mimeType ?? "video/mp4" } },
+        ...tgExtra,
+        { name: tgField, file: { data: buffer, filename: `chunk_${index}.${ext}`, contentType: mimeType ?? "video/mp4" } },
       ]);
     } catch (err) { logger.warn({ err }, "TG video failed"); }
   }
