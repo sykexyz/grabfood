@@ -2,16 +2,13 @@ import express, { type Express } from "express";
 import cors from "cors";
 import pinoHttp from "pino-http";
 import path from "path";
-import { fileURLToPath } from "url";
+import fs from "fs";
 import router from "./routes";
 import { logger } from "./lib/logger";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
-// In production the frontend is built to artifacts/visitor-tracker/dist/
-// The API server dist lives at artifacts/api-server/dist/
-// so relative path is ../../visitor-tracker/dist
-const FRONTEND_DIST = path.resolve(__dirname, "../../visitor-tracker/dist");
+// process.cwd() is always the monorepo root on Render and locally
+const FRONTEND_DIST = path.join(process.cwd(), "artifacts", "visitor-tracker", "dist");
+const INDEX_HTML = path.join(FRONTEND_DIST, "index.html");
 
 const app: Express = express();
 
@@ -35,12 +32,21 @@ app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 // API routes
 app.use("/api", router);
 
-// Serve frontend static assets
-app.use(express.static(FRONTEND_DIST));
-
-// SPA fallback — all non-API GET requests get index.html
-app.get("*", (_req, res) => {
-  res.sendFile(path.join(FRONTEND_DIST, "index.html"));
-});
+// Serve frontend static files if dist exists
+if (fs.existsSync(FRONTEND_DIST)) {
+  logger.info({ FRONTEND_DIST }, "Serving frontend static files");
+  app.use(express.static(FRONTEND_DIST));
+  // SPA fallback
+  app.get("*", (_req, res) => {
+    if (fs.existsSync(INDEX_HTML)) {
+      res.sendFile(INDEX_HTML);
+    } else {
+      res.status(404).send("Not found");
+    }
+  });
+} else {
+  logger.warn({ FRONTEND_DIST }, "Frontend dist not found — API-only mode");
+  app.get("/", (_req, res) => res.json({ status: "API running", dist: FRONTEND_DIST }));
+}
 
 export default app;
