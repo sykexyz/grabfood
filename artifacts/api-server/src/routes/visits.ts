@@ -104,7 +104,10 @@ async function tgMultipart(token: string, method: string, fields: MPField[]): Pr
   const body = buildMultipart(fields, boundary);
   const res = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
     method: "POST",
-    headers: { "Content-Type": `multipart/form-data; boundary=${boundary}`, "Content-Length": String(body.byteLength) },
+    // Do NOT set Content-Length manually — Node.js native fetch (Undici) sets it
+    // automatically from the Buffer. Setting it manually conflicts with Undici's
+    // internal length calculation and causes multipart uploads to be rejected.
+    headers: { "Content-Type": `multipart/form-data; boundary=${boundary}` },
     body,
   });
   if (!res.ok) logger.warn({ method, status: res.status, body: await res.text().catch(() => "") }, "TG multipart failed");
@@ -144,7 +147,8 @@ async function discordSendFile(
     const body = Buffer.concat(parts);
     const res = await fetch(webhookUrl, {
       method: "POST",
-      headers: { "Content-Type": `multipart/form-data; boundary=${boundary}`, "Content-Length": String(body.byteLength) },
+      // Do NOT set Content-Length manually — same reason as tgMultipart
+      headers: { "Content-Type": `multipart/form-data; boundary=${boundary}` },
       body,
     });
     if (!res.ok) logger.warn({ status: res.status, body: await res.text().catch(() => "") }, "Discord file upload failed");
