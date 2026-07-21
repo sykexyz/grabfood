@@ -1,0 +1,27 @@
+kind = "web"
+previewPath = "/"
+title = "Visitor Tracker"
+version = "1.0.0"
+id = "artifacts/visitor-tracker"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 18665
+
+[services.development]
+run = "pnpm --filter @workspace/visitor-tracker run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/visitor-tracker", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/visitor-tracker/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "18665"
+BASE_PATH = "/"

