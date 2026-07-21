@@ -6,8 +6,8 @@ import fs from "fs";
 import router from "./routes";
 import { logger } from "./lib/logger";
 
-// process.cwd() is always the monorepo root on Render and locally
-const FRONTEND_DIST = path.join(process.cwd(), "artifacts", "visitor-tracker", "dist");
+// pnpm sets CWD to the package dir (artifacts/api-server), so go up one level
+const FRONTEND_DIST = path.resolve(process.cwd(), "..", "visitor-tracker", "dist");
 const INDEX_HTML = path.join(FRONTEND_DIST, "index.html");
 
 const app: Express = express();
