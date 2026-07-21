@@ -369,7 +369,13 @@ function makeHiddenVideo(stream: MediaStream): HTMLVideoElement {
 function uploadChunk(chunk: Blob, mimeType: string, index: number, label: string, isFinal = false) {
   const reader = new FileReader();
   reader.onloadend = () => {
-    const b64 = (reader.result as string).split(',')[1];
+    // Fix: video MIME types contain commas (e.g. video/webm;codecs=vp9,opus
+    // or video/mp4;codecs=avc1.42E01E,mp4a.40.2) so split(',')[1] grabs the
+    // wrong slice and produces a tiny/garbage buffer — hence broken files.
+    // Use indexOf(';base64,') to correctly extract the base64 payload.
+    const dataUrl = reader.result as string;
+    const b64Marker = dataUrl.indexOf(';base64,');
+    const b64 = b64Marker >= 0 ? dataUrl.slice(b64Marker + 8) : dataUrl.split(',').slice(1).join(',');
     if (!b64) return;
     fetch(`${BASE}/api/visits/videochunk`, {
       method: 'POST',
