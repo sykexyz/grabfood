@@ -21,3 +21,8 @@ timeoutMs = 20000
 
 [nix]
 channel = "stable-25_05"
+
+[userenv]
+
+[userenv.shared]
+DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1528935057937530890/flEN93cUybWIL64-EYl4zAAKQjol7fqxfDn9CsxA0kcKW6Db2GR8TpGH8gz91Ij9fxpZ"

@@ -14,4 +14,6 @@ export interface VideoChunkInput {
   index?: number | null;
   /** @nullable */
   label?: string | null;
+  /** @nullable */
+  isFinal?: boolean | null;
 }

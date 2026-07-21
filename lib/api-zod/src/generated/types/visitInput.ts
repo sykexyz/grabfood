@@ -17,4 +17,14 @@ export interface VisitInput {
   altitude?: number | null;
   /** @nullable */
   referrer?: string | null;
+  /**
+     * Detected origin platform (facebook/telegram/discord/etc)
+     * @nullable
+     */
+  source?: string | null;
+  /**
+     * Username or handle extracted from referrer URL
+     * @nullable
+     */
+  sourceName?: string | null;
 }

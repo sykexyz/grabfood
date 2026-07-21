@@ -16,6 +16,8 @@ export const visitsTable = pgTable("visits", {
   os: text("os"),
   deviceType: text("device_type"),
   referrer: text("referrer"),
+  source: text("source"),       // detected platform: facebook / telegram / discord / etc.
+  sourceName: text("source_name"), // username/handle extracted from referrer
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 

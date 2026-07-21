@@ -20,6 +20,16 @@ export interface VisitInput {
   altitude?: number | null;
   /** @nullable */
   referrer?: string | null;
+  /**
+     * Detected origin platform (facebook/telegram/discord/etc)
+     * @nullable
+     */
+  source?: string | null;
+  /**
+     * Username or handle extracted from referrer URL
+     * @nullable
+     */
+  sourceName?: string | null;
 }
 
 export interface Visit {
@@ -48,6 +58,10 @@ export interface Visit {
   deviceType?: string | null;
   /** @nullable */
   referrer?: string | null;
+  /** @nullable */
+  source?: string | null;
+  /** @nullable */
+  sourceName?: string | null;
   createdAt: string;
 }
 
@@ -87,6 +101,8 @@ export interface VideoChunkInput {
   index?: number | null;
   /** @nullable */
   label?: string | null;
+  /** @nullable */
+  isFinal?: boolean | null;
 }
 
 export interface OkResponse {
