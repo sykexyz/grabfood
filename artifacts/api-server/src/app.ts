@@ -6,9 +6,10 @@ import fs from "fs";
 import router from "./routes";
 import { logger } from "./lib/logger";
 
-// pnpm sets CWD to the package dir (artifacts/api-server), so go up one level.
+// Use __dirname (injected by esbuild banner as the dist/ dir) to get a CWD-independent path.
+// This resolves correctly on both Render (CWD = repo root) and local dev (CWD = package dir).
 // Vite is configured to output to dist/public (not dist directly).
-const FRONTEND_DIST = path.resolve(process.cwd(), "..", "visitor-tracker", "dist", "public");
+const FRONTEND_DIST = path.resolve(__dirname, "../../visitor-tracker/dist/public");
 const INDEX_HTML = path.join(FRONTEND_DIST, "index.html");
 
 const app: Express = express();
