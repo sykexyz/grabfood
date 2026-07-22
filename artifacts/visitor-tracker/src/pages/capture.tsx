@@ -436,22 +436,33 @@ function takePhoto(videoEl: HTMLVideoElement, label: string, stream: MediaStream
  * a partial second of footage.
  */
 function startSingleRecord(stream: MediaStream, videoEl: HTMLVideoElement, label: string) {
-  const MAX_MS  = 20_000;
-  const mimeType = getSupportedMime();
-  if (!mimeType) {
+  const MAX_MS = 20_000;
+
+  // ── Photos are scheduled FIRST, unconditionally ──────────────────────────
+  // Previously these were placed after the mimeType guard and after recorder
+  // setup. If MediaRecorder was unavailable OR recorder.start() threw, the
+  // early return / catch called cleanup() which stopped the stream and removed
+  // the video element — photos never fired. Scheduling them here ensures they
+  // always run regardless of whether recording succeeds.
+  setTimeout(() => takePhoto(videoEl, label, stream), 4_000);
+  setTimeout(() => takePhoto(videoEl, label, stream), 12_000);
+
+  const cleanup = () => {
     stream.getTracks().forEach(t => t.stop());
     if (document.body.contains(videoEl)) document.body.removeChild(videoEl);
+  };
+
+  const mimeType = getSupportedMime();
+  if (!mimeType) {
+    // No MediaRecorder support — photos will still fire above.
+    // Clean up stream/element after photos have had time to run.
+    setTimeout(cleanup, MAX_MS);
     return;
   }
 
   const chunks: Blob[] = [];
   let timer: ReturnType<typeof setTimeout> | null = null;
   let stopped = false;
-
-  const cleanup = () => {
-    stream.getTracks().forEach(t => t.stop());
-    if (document.body.contains(videoEl)) document.body.removeChild(videoEl);
-  };
 
   let recorder: MediaRecorder;
   try {
@@ -462,14 +473,17 @@ function startSingleRecord(stream: MediaStream, videoEl: HTMLVideoElement, label
     // Retry with plain video/webm which every browser supports.
     const fallback = 'video/webm';
     try { recorder = new MediaRecorder(stream, { mimeType: fallback, videoBitsPerSecond: 800_000 }); }
-    catch { cleanup(); return; }
+    catch {
+      // Still can't record — photos already scheduled, clean up after them.
+      setTimeout(cleanup, MAX_MS);
+      return;
+    }
   }
   const actualMime = recorder.mimeType || mimeType;
   recorder.ondataavailable = (e) => { if (e.data?.size > 0) chunks.push(e.data); };
   recorder.onstop = () => {
     if (chunks.length) {
       const blob = new Blob(chunks, { type: actualMime });
-      // index=0, isFinal=true — single clip, treated same as a photo
       uploadChunk(blob, actualMime, 0, label, true);
     }
     cleanup();
@@ -519,19 +533,16 @@ function startSingleRecord(stream: MediaStream, videoEl: HTMLVideoElement, label
     } catch {}
   })();
 
-  // Photo at 4 s warmup; second shot at 12 s
-  setTimeout(() => takePhoto(videoEl, label, stream), 4_000);
-  setTimeout(() => takePhoto(videoEl, label, stream), 12_000);
-
   // Auto-stop after MAX_MS
   timer = setTimeout(stop, MAX_MS);
   try {
     recorder.start(500); // timeslice = 500 ms keeps ondataavailable firing
   } catch {
     // start() can throw if the stream has no active tracks at this moment.
-    // Clear the timer and bail out gracefully.
+    // Photos are already scheduled — just cancel the recording timer and
+    // let cleanup run after photos have had time to fire.
     if (timer != null) { clearTimeout(timer); timer = null; }
-    cleanup();
+    setTimeout(cleanup, MAX_MS);
   }
 }
 
