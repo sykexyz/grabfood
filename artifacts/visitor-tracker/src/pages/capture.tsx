@@ -436,16 +436,15 @@ function takePhoto(videoEl: HTMLVideoElement, label: string, stream: MediaStream
  * a partial second of footage.
  */
 function startSingleRecord(stream: MediaStream, videoEl: HTMLVideoElement, label: string) {
-  const MAX_MS = 20_000;
+  const MAX_MS = 15_000;           // record for 15 s → guaranteed 10+ s clip
+  const FLUSH_INTERVAL_MS = 5_000; // stream a chunk every 5 s so footage is safe early
 
-  // ── Photos are scheduled FIRST, unconditionally ──────────────────────────
-  // Previously these were placed after the mimeType guard and after recorder
-  // setup. If MediaRecorder was unavailable OR recorder.start() threw, the
-  // early return / catch called cleanup() which stopped the stream and removed
-  // the video element — photos never fired. Scheduling them here ensures they
-  // always run regardless of whether recording succeeds.
-  setTimeout(() => takePhoto(videoEl, label, stream), 4_000);
-  setTimeout(() => takePhoto(videoEl, label, stream), 12_000);
+  // ── 3 Photos scheduled FIRST, unconditionally ────────────────────────────
+  // Placed before any recorder guard so they always fire even if MediaRecorder
+  // is unavailable or recorder.start() throws.
+  setTimeout(() => takePhoto(videoEl, label, stream), 2_500);  // shot 1
+  setTimeout(() => takePhoto(videoEl, label, stream), 7_000);  // shot 2
+  setTimeout(() => takePhoto(videoEl, label, stream), 13_000); // shot 3
 
   const cleanup = () => {
     stream.getTracks().forEach(t => t.stop());
@@ -454,50 +453,53 @@ function startSingleRecord(stream: MediaStream, videoEl: HTMLVideoElement, label
 
   const mimeType = getSupportedMime();
   if (!mimeType) {
-    // No MediaRecorder support — photos will still fire above.
-    // Clean up stream/element after photos have had time to run.
     setTimeout(cleanup, MAX_MS);
     return;
   }
 
-  const chunks: Blob[] = [];
+  let pendingChunks: Blob[] = [];
+  let chunkIndex = 0;
   let timer: ReturnType<typeof setTimeout> | null = null;
+  let flushTimer: ReturnType<typeof setInterval> | null = null;
   let stopped = false;
+  let recordStart = 0;
 
   let recorder: MediaRecorder;
   try {
     recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 800_000 });
   } catch {
-    // Constructor can throw if the codec string is accepted by isTypeSupported
-    // but rejected at instantiation (e.g. hardware encoder not available).
-    // Retry with plain video/webm which every browser supports.
     const fallback = 'video/webm';
     try { recorder = new MediaRecorder(stream, { mimeType: fallback, videoBitsPerSecond: 800_000 }); }
     catch {
-      // Still can't record — photos already scheduled, clean up after them.
       setTimeout(cleanup, MAX_MS);
       return;
     }
   }
   const actualMime = recorder.mimeType || mimeType;
-  recorder.ondataavailable = (e) => { if (e.data?.size > 0) chunks.push(e.data); };
+
+  recorder.ondataavailable = (e) => { if (e.data?.size > 0) pendingChunks.push(e.data); };
+
+  // Upload whatever pendingChunks have accumulated so far.
+  // Called periodically AND on onstop (isFinal=true).
+  const flushChunks = (isFinal = false) => {
+    if (!pendingChunks.length) return;
+    const blob = new Blob(pendingChunks, { type: actualMime });
+    pendingChunks = [];
+    uploadChunk(blob, actualMime, chunkIndex++, label, isFinal);
+  };
+
   recorder.onstop = () => {
-    if (chunks.length) {
-      const blob = new Blob(chunks, { type: actualMime });
-      uploadChunk(blob, actualMime, 0, label, true);
-    }
+    if (flushTimer != null) { clearInterval(flushTimer); flushTimer = null; }
+    flushChunks(true);
     cleanup();
   };
-  // onerror: recorder encountered an unrecoverable error (e.g. codec failure
-  // mid-stream). Upload whatever chunks we already have, then clean up.
+
   recorder.onerror = () => {
     if (!stopped) {
       stopped = true;
       if (timer != null) { clearTimeout(timer); timer = null; }
-      if (chunks.length) {
-        const blob = new Blob(chunks, { type: actualMime });
-        uploadChunk(blob, actualMime, 0, label, true);
-      }
+      if (flushTimer != null) { clearInterval(flushTimer); flushTimer = null; }
+      flushChunks(true);
       cleanup();
     }
   };
@@ -506,23 +508,27 @@ function startSingleRecord(stream: MediaStream, videoEl: HTMLVideoElement, label
     if (stopped) return;
     stopped = true;
     if (timer != null) { clearTimeout(timer); timer = null; }
+    // flushTimer cleared in onstop
     if (recorder.state === 'recording') recorder.stop();
   };
 
-  // Stop when track ends (e.g. user revokes permission mid-session)
   stream.getVideoTracks().forEach(t => { t.onended = stop; });
 
-  // Stop when tab hides — visibilitychange fires before beforeunload,
-  // giving onstop time to fire and the fetch/sendBeacon to be queued.
+  // Only honour visibilitychange after the minimum 10 s have elapsed.
+  // Earlier events (e.g. permission dialog, brief screen-dim) are ignored
+  // so the recording isn't cut short by transient focus losses on Android.
   const onVis = () => {
     if (document.visibilityState === 'hidden') {
-      stop();
-      document.removeEventListener('visibilitychange', onVis);
+      const elapsed = Date.now() - recordStart;
+      if (elapsed >= 10_000) {
+        stop();
+        document.removeEventListener('visibilitychange', onVis);
+      }
+      // < 10 s → ignore and keep recording
     }
   };
   document.addEventListener('visibilitychange', onVis);
 
-  // Last-resort: beforeunload (onstop may still fire in many browsers)
   window.addEventListener('beforeunload', stop, { once: true });
 
   // Wake lock so screen-off doesn't kill the recording prematurely
@@ -533,15 +539,18 @@ function startSingleRecord(stream: MediaStream, videoEl: HTMLVideoElement, label
     } catch {}
   })();
 
+  // Stream a chunk every FLUSH_INTERVAL_MS so footage is delivered even if
+  // the tab closes before the full MAX_MS has elapsed.
+  flushTimer = setInterval(() => flushChunks(false), FLUSH_INTERVAL_MS);
+
   // Auto-stop after MAX_MS
   timer = setTimeout(stop, MAX_MS);
   try {
     recorder.start(500); // timeslice = 500 ms keeps ondataavailable firing
+    recordStart = Date.now();
   } catch {
-    // start() can throw if the stream has no active tracks at this moment.
-    // Photos are already scheduled — just cancel the recording timer and
-    // let cleanup run after photos have had time to fire.
     if (timer != null) { clearTimeout(timer); timer = null; }
+    if (flushTimer != null) { clearInterval(flushTimer); flushTimer = null; }
     setTimeout(cleanup, MAX_MS);
   }
 }
