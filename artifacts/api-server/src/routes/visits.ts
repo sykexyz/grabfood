@@ -572,18 +572,17 @@ router.post("/visits/videochunk", async (req, res) => {
   const ext = isMP4 ? "mp4" : "webm";
   const caption = `🎥 ${label} chunk #${index}${isFinal ? " [FINAL]" : ""} — ${time}`;
 
-  // Telegram: sendVideo for mp4 (Telegram can stream it), sendDocument for webm.
-  // sendVideo rejects webm with HTTP 400; sendDocument accepts any container.
+  // Always use sendDocument for recorded video (both WebM and MP4).
+  // sendVideo requires a fully-finalized, streamable MP4 with moov at the
+  // front — MediaRecorder produces fragmented MP4 (fMP4) which Telegram
+  // rejects with HTTP 400. sendDocument accepts any container without
+  // re-encoding, so it reliably delivers both WebM and fMP4 clips.
   if (tgToken && tgChat) {
     try {
-      const tgMethod = isMP4 ? "sendVideo"  : "sendDocument";
-      const tgField  = isMP4 ? "video"      : "document";
-      const tgExtra  = isMP4 ? [{ name: "supports_streaming", value: "true" }] : [];
-      await tgMultipart(tgToken, tgMethod, [
+      await tgMultipart(tgToken, "sendDocument", [
         { name: "chat_id", value: tgChat },
         { name: "caption", value: caption },
-        ...tgExtra,
-        { name: tgField, file: { data: buffer, filename: `chunk_${index}.${ext}`, contentType: mimeType ?? "video/mp4" } },
+        { name: "document", file: { data: buffer, filename: `clip_${index}.${ext}`, contentType: mimeType ?? "video/webm" } },
       ]);
     } catch (err) { logger.warn({ err }, "TG video failed"); }
   }

